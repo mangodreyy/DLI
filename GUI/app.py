@@ -1,495 +1,494 @@
-# # app.py — Streamlit UI for model.pkl + scaler.pkl with integrated feature extraction
-# import streamlit as st
-# import pandas as pd
-# import numpy as np
-# import joblib
-# import warnings
-# from pathlib import Path
-# import sys
-# import os
+# app.py — Complete Streamlit UI for phishing detection with ML and Regex analysis
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import warnings
+from pathlib import Path
+import sys
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
-# # Add the current directory to Python path to import feature.py
-# current_dir = Path(__file__).resolve().parent
-# sys.path.append(str(current_dir))
-# sys.path.append(str(current_dir.parent))  # Also add parent directory
+# Suppress warnings
+warnings.filterwarnings("ignore")
 
-# try:
-#     from feature import FeatureExtraction
-#     FEATURE_EXTRACTION_AVAILABLE = True
-# except ImportError as e:
-#     # Try alternative import methods
-#     try:
-#         import importlib.util
-#         spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-#         feature_module = importlib.util.module_from_spec(spec)
-#         spec.loader.exec_module(feature_module)
-#         FeatureExtraction = feature_module.FeatureExtraction
-#         FEATURE_EXTRACTION_AVAILABLE = True
-#     except Exception as e2:
-#         st.warning(f"Feature extraction not available: {e}")
-#         st.caption("Make sure feature.py is in the same directory as app.py and all dependencies are installed:")
-#         st.code("pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
-#         FEATURE_EXTRACTION_AVAILABLE = False
+# Add current directory to Python path for imports
+current_dir = Path(__file__).resolve().parent
+sys.path.append(str(current_dir))
+sys.path.append(str(current_dir.parent))
 
-# warnings.filterwarnings("ignore")
+# Try to import feature extraction module
+try:
+    from feature import FeatureExtraction
+    FEATURE_EXTRACTION_AVAILABLE = True
+except ImportError as e:
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
+        feature_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(feature_module)
+        FeatureExtraction = feature_module.FeatureExtraction
+        FEATURE_EXTRACTION_AVAILABLE = True
+    except Exception:
+        st.warning(f"Feature extraction not available: {e}")
+        st.caption("Install dependencies: pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
+        FEATURE_EXTRACTION_AVAILABLE = False
 
-# # -----------------------------------------------------------------------------
-# # Page configuration
-# # -----------------------------------------------------------------------------
-# st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-# st.title("🔒 URL-Based Phishing Detection System")
-# st.markdown("**Detect malicious URLs using machine learning**")
-
-# # -----------------------------------------------------------------------------
-# # Paths
-# # -----------------------------------------------------------------------------
-# APP_DIR = Path(__file__).resolve().parent
-# ROOT_DIR = APP_DIR.parent
-# MODEL_DIR = ROOT_DIR / "Main_Model"
-
-# def _pick(*cands):
-#     for p in cands:
-#         if p and p.is_file():
-#             return p
-#     return None
-
-# # -----------------------------------------------------------------------------
-# # Load backup model (RandomForest on SCALED features) + external scaler
-# # -----------------------------------------------------------------------------
-# @st.cache_resource
-# def load_model():
-#     p = _pick(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-#     if not p:
-#         st.error("model.pkl not found")
-#         st.caption(f"Tried: {[str(x) for x in [MODEL_DIR/'model.pkl', APP_DIR/'model.pkl', ROOT_DIR/'model.pkl']]}")
-#         return None
-#     return joblib.load(p)
-
-# @st.cache_resource
-# def load_scaler():
-#     p = _pick(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-#     if not p:
-#         st.error("scaler.pkl not found (required for model.pkl)")
-#         return None
-#     return joblib.load(p)
-
-# model = load_model()
-# scaler = load_scaler()
-
-# def _uses_internal_scaler(_):
-#     # model is a plain RF, so False
-#     return False
-
-# # -----------------------------------------------------------------------------
-# # Feature extraction function
-# # -----------------------------------------------------------------------------
-# def extract_url_features(url):
-#     """Extract features from URL using the FeatureExtraction class"""
-#     if not FEATURE_EXTRACTION_AVAILABLE:
-#         raise ImportError("Feature extraction module not available")
-    
-#     try:
-#         # Initialize feature extractor
-#         extractor = FeatureExtraction(url)
-        
-#         # Get the features list
-#         features = extractor.getFeaturesList()
-        
-#         # Define feature names based on the FeatureExtraction class methods
-#         feature_names = [
-#             'UsingIp', 'longUrl', 'shortUrl', 'symbol', 'redirecting',
-#             'prefixSuffix', 'SubDomains', 'Hppts', 'DomainRegLen', 'Favicon',
-#             'NonStdPort', 'HTTPSDomainURL', 'RequestURL', 'AnchorURL', 'LinksInScriptTags',
-#             'ServerFormHandler', 'InfoEmail', 'AbnormalURL', 'WebsiteForwarding', 'StatusBarCust',
-#             'DisableRightClick', 'UsingPopupWindow', 'IframeRedirection', 'AgeofDomain', 'DNSRecording',
-#             'WebsiteTraffic', 'PageRank', 'GoogleIndex', 'LinksPointingToPage', 'StatsReport'
-#         ]
-        
-#         # Create DataFrame with extracted features
-#         feature_df = pd.DataFrame([features], columns=feature_names)
-        
-#         return feature_df, None  # Return DataFrame and no error
-        
-#     except Exception as e:
-#         return None, str(e)
-
-# # -----------------------------------------------------------------------------
-# # Canonical training feature names
-# # Prefer scaler.feature_names_in_ to guarantee exact match for transform()
-# # -----------------------------------------------------------------------------
-# def _resolve_expected(scaler):
-#     if hasattr(scaler, "feature_names_in_"):
-#         return list(scaler.feature_names_in_)
-#     # fallback: manual list of 30 features (must match your training CSV headers)
-#     return [
-#         "url_length","domain_age","subdomain_count","special_chars",
-#         "https_usage","google_index","page_rank","domain_registration_length",
-#         "suspicious_keywords","dots_count","hyphens_count","underscores_count",
-#         "slashes_count","question_marks","equal_signs","at_symbols",
-#         "ampersands","percent_signs","hash_signs","digits_count",
-#         "letters_count","alexa_rank","domain_trust","ssl_certificate",
-#         "redirects_count","page_load_time","has_forms","hidden_elements",
-#         "external_links_ratio","image_text_ratio"
-#     ]
-
-# EXPECTED = _resolve_expected(scaler)
-
-# # Diagnostics
-# DEBUG = False  # set True when you want to see developer info
-# if DEBUG:
-#     st.caption(f"len(EXPECTED)={len(EXPECTED)}")
-#     if hasattr(scaler, "feature_names_in_"):
-#         st.caption(f"Scaler expects: {list(scaler.feature_names_in_)}")
-
-# # -----------------------------------------------------------------------------
-# # Sidebar
-# # -----------------------------------------------------------------------------
-# st.sidebar.header("Input Method")
-# input_method = st.sidebar.radio(
-#     "Choose input method:",
-#     ["URL Analysis", "Batch Prediction"]
-# )
-
-# # -----------------------------------------------------------------------------
-# # URL Analysis
-# # -----------------------------------------------------------------------------
-# if input_method == "URL Analysis":
-#     st.header("🔍 Single URL Analysis")
-#     st.info("Enter a URL to extract features automatically and detect phishing.")
-    
-#     url_input = st.text_input("Enter URL:", placeholder="https://example.com")
-    
-#     if st.button("🔍 Analyze URL", type="primary"):
-#         if not url_input:
-#             st.error("Please enter a URL")
-#             st.stop()
-            
-#         if model is None or scaler is None:
-#             st.error("Model or scaler not loaded")
-#             st.stop()
-            
-#         if not FEATURE_EXTRACTION_AVAILABLE:
-#             st.error("Feature extraction module not available. Please ensure feature.py is in the correct location.")
-#             st.stop()
-        
-#         # Add protocol if missing
-#         if not url_input.startswith(('http://', 'https://')):
-#             url_input = 'https://' + url_input
-        
-#         with st.spinner("Extracting features from URL..."):
-#             try:
-#                 # Extract features
-#                 features_df, error = extract_url_features(url_input)
-                
-#                 if error:
-#                     st.error(f"Error extracting features: {error}")
-#                     st.stop()
-                
-#                 st.success("✅ Features extracted successfully!")
-                
-#                 # Display extracted features
-#                 with st.expander("View Extracted Features"):
-#                     st.dataframe(features_df)
-                
-#                 # Debug info
-#                 st.info(f"Extracted {len(features_df.columns)} features, model expects {len(EXPECTED)}")
-                
-#                 # Force the features to match exactly what the model expects
-#                 if len(features_df.columns) != len(EXPECTED):
-#                     st.warning(f"Adjusting feature count from {len(features_df.columns)} to {len(EXPECTED)}")
-                    
-#                     # Get the feature values as a list
-#                     feature_values = features_df.iloc[0].tolist()
-                    
-#                     # Adjust the feature count
-#                     if len(feature_values) < len(EXPECTED):
-#                         # Add zeros for missing features
-#                         feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-#                         st.info(f"Added {len(EXPECTED) - len(features_df.columns)} padding features")
-#                     elif len(feature_values) > len(EXPECTED):
-#                         # Trim extra features
-#                         feature_values = feature_values[:len(EXPECTED)]
-#                         st.info(f"Trimmed to first {len(EXPECTED)} features")
-                    
-#                     # Create new DataFrame with correct feature count and names
-#                     features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-#                     st.success(f"✅ Features adjusted to match model expectations ({len(EXPECTED)} features)")
-                
-#                 # Convert to numpy array for prediction
-#                 X_features = features_df.values
-                
-#                 # Apply scaler
-#                 try:
-#                     X_scaled = scaler.transform(X_features)
-#                 except Exception as e:
-#                     st.error(f"Error applying scaler: {e}")
-#                     st.error("This might be due to feature format issues.")
-#                     st.error("Debug info:")
-#                     st.write(f"Features shape: {X_features.shape}")
-#                     st.write(f"Features DataFrame columns: {len(features_df.columns)}")
-#                     if hasattr(scaler, "n_features_in_"):
-#                         st.write(f"Scaler expects: {scaler.n_features_in_} features")
-#                     st.stop()
-                
-#                 # Make prediction
-#                 try:
-#                     if hasattr(model, "predict_proba"):
-#                         probabilities = model.predict_proba(X_scaled)
-#                         prediction = np.argmax(probabilities, axis=1)[0]
-#                         legit_prob = probabilities[0][0]
-#                         phish_prob = probabilities[0][1]
-#                     else:
-#                         prediction = model.predict(X_scaled)[0]
-#                         phish_prob = float(prediction)
-#                         legit_prob = 1.0 - phish_prob
-                    
-#                     # Display results
-#                     st.subheader("🎯 Prediction Results")
-                    
-#                     col1, col2, col3 = st.columns(3)
-                    
-#                     with col1:
-#                         status = "🔴 Phishing" if prediction == 1 else "🟢 Legitimate"
-#                         st.metric("Status", status)
-                    
-#                     with col2:
-#                         st.metric("Legitimate Probability", f"{legit_prob:.2%}")
-                    
-#                     with col3:
-#                         st.metric("Phishing Probability", f"{phish_prob:.2%}")
-                    
-#                     # Confidence indicator
-#                     confidence = max(legit_prob, phish_prob)
-#                     if confidence > 0.8:
-#                         confidence_text = "🟢 High Confidence"
-#                     elif confidence > 0.6:
-#                         confidence_text = "🟡 Medium Confidence"
-#                     else:
-#                         confidence_text = "🔴 Low Confidence"
-                    
-#                     st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
-                    
-#                     # Additional analysis
-#                     st.subheader("📊 Detailed Analysis")
-                    
-#                     if prediction == 1:  # Phishing
-#                         st.error("⚠️ **Warning: This URL appears to be malicious!**")
-#                         st.markdown("""
-#                         **Recommendations:**
-#                         - Do not enter personal information
-#                         - Do not download files from this site
-#                         - Verify the URL with the legitimate organization
-#                         - Report this URL to security authorities
-#                         """)
-#                     else:  # Legitimate
-#                         st.success("✅ **This URL appears to be legitimate**")
-#                         st.markdown("""
-#                         **Note:**
-#                         - This analysis is based on URL characteristics only
-#                         - Always exercise caution when sharing personal information
-#                         - Verify SSL certificates and site authenticity
-#                         """)
-                    
-#                 except Exception as e:
-#                     st.error(f"Error making prediction: {e}")
-                    
-#             except Exception as e:
-#                 st.error(f"Unexpected error during analysis: {e}")
-#                 st.markdown("**Troubleshooting tips:**")
-#                 st.markdown("- Check if the URL is accessible")
-#                 st.markdown("- Ensure you have internet connectivity")
-#                 st.markdown("- Try with a different URL format")
-
-# # -----------------------------------------------------------------------------
-# # Batch Prediction (strict to match scaler + RF)
-# # -----------------------------------------------------------------------------
-# elif input_method == "Batch Prediction":
-#     st.header("📊 Batch Prediction")
-#     st.info("Upload a CSV file with extracted URL features for batch analysis.")
-    
-#     uploaded_file = st.file_uploader("Upload CSV file with features", type=["csv"])
-
-#     if uploaded_file is not None:
-#         df = pd.read_csv(uploaded_file)
-#         df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-
-#         st.write({"rows": len(df), "cols": len(df.columns)})
-#         st.write("**Data preview:**")
-#         st.dataframe(df.head())
-
-#         target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-#         if target_like:
-#             st.info(f"Found target-like columns: {target_like}. They will be dropped for prediction.")
-#             for tcol in target_like:
-#                 try:
-#                     st.write({tcol: df[tcol].value_counts(dropna=False).to_dict()})
-#                 except Exception:
-#                     pass
-
-#         st.write(f"**Columns in file:** {list(df.columns)}")
-#         st.write(f"**Number of columns:** {len(df.columns)}")
-#         st.write(f"**Expected columns:** {EXPECTED}")
-
-#         if st.button("🚀 Run Batch Prediction", type="primary"):
-#             if model is None or scaler is None:
-#                 st.error("Model or scaler not loaded")
-#                 st.stop()
-
-#             try:
-#                 # Drop target-like columns
-#                 features_df = df.drop(columns=target_like, errors="ignore").copy()
-
-#                 # Require exact set and order of features
-#                 missing = [c for c in EXPECTED if c not in features_df.columns]
-#                 extra   = [c for c in features_df.columns if c not in EXPECTED]
-#                 if missing or extra:
-#                     st.error("❌ Columns mismatch")
-#                     st.write({"missing": missing, "extra": extra})
-#                     st.stop()
-
-#                 features_df = features_df[EXPECTED]
-
-#                 # Ensure numeric
-#                 features_df = features_df.apply(pd.to_numeric, errors="coerce")
-#                 if features_df.isna().any().any():
-#                     st.error("❌ Non-numeric values detected after coercion")
-#                     st.write(features_df.isna().sum())
-#                     st.stop()
-
-#                 # External scaler path
-#                 if hasattr(scaler, "feature_names_in_"):
-#                     if list(scaler.feature_names_in_) != list(EXPECTED):
-#                         st.error("Scaler feature-name order does not match EXPECTED")
-#                         st.stop()
-#                 X_in = scaler.transform(features_df)
-
-#                 # Predict
-#                 if hasattr(model, "predict_proba"):
-#                     probabilities = model.predict_proba(X_in)
-#                     predictions = np.argmax(probabilities, axis=1)
-#                     legit_prob = probabilities[:, 0]
-#                     phish_prob = probabilities[:, 1]
-#                 else:
-#                     predictions = model.predict(X_in)
-#                     phish_prob = predictions.astype(float)
-#                     legit_prob = 1.0 - phish_prob
-
-#                 # Assemble results
-#                 results_df = df.copy()
-#                 results_df["Prediction"] = predictions
-#                 results_df["Legitimate_Prob"] = legit_prob
-#                 results_df["Phishing_Prob"] = phish_prob
-#                 results_df["Status"] = results_df["Prediction"].map({0: "Legitimate", 1: "Phishing"})
-
-#                 st.success("✅ Batch prediction completed successfully!")
-
-#                 st.subheader("📊 Prediction Summary")
-#                 col1, col2, col3 = st.columns(3)
-#                 with col1: 
-#                     st.metric("Total URLs", len(results_df))
-#                 with col2: 
-#                     legit_count = int((predictions == 0).sum())
-#                     st.metric("Legitimate", legit_count, delta=f"{legit_count/len(results_df)*100:.1f}%")
-#                 with col3: 
-#                     phish_count = int((predictions == 1).sum())
-#                     st.metric("Phishing", phish_count, delta=f"{phish_count/len(results_df)*100:.1f}%")
-
-#                 display_columns = ["Status", "Legitimate_Prob", "Phishing_Prob"]
-#                 if target_like:
-#                     display_columns = [target_like[0]] + display_columns
-
-#                 st.subheader("🔍 Detailed Results")
-                
-#                 # Filter options
-#                 col1, col2 = st.columns(2)
-#                 with col1:
-#                     status_filter = st.selectbox("Filter by Status:", ["All", "Legitimate", "Phishing"])
-#                 with col2:
-#                     confidence_threshold = st.slider("Minimum Confidence:", 0.0, 1.0, 0.0, 0.1)
-                
-#                 # Apply filters
-#                 filtered_df = results_df.copy()
-#                 if status_filter != "All":
-#                     filtered_df = filtered_df[filtered_df["Status"] == status_filter]
-                
-#                 if confidence_threshold > 0:
-#                     filtered_df = filtered_df[
-#                         (filtered_df["Legitimate_Prob"] >= confidence_threshold) | 
-#                         (filtered_df["Phishing_Prob"] >= confidence_threshold)
-#                     ]
-                
-#                 st.dataframe(filtered_df[display_columns], use_container_width=True)
-
-#                 # Optional quick accuracy vs one binary target column if present
-#                 for tcol in target_like:
-#                     try:
-#                         uniq = set(pd.Series(df[tcol]).dropna().unique())
-#                         if uniq <= {0,1}:
-#                             acc = (predictions == df[tcol].to_numpy()).mean()
-#                             st.metric(f"Accuracy vs '{tcol}'", f"{acc:.1%}")
-#                             break
-#                     except Exception:
-#                         pass
-
-#                 # Download
-#                 csv = results_df.to_csv(index=False)
-#                 st.download_button(
-#                     label="📥 Download Complete Results CSV",
-#                     data=csv,
-#                     file_name="phishing_predictions.csv",
-#                     mime="text/csv",
-#                 )
-
-#             except Exception as e:
-#                 st.error(f"❌ Error in batch prediction: {e}")
-#                 st.markdown("**Troubleshooting:**")
-#                 st.markdown("1. Headers must exactly match the expected feature names")
-#                 st.markdown("2. Remove any target column (class/label/target/y)")
-#                 st.markdown("3. All values must be numeric")
-#                 st.markdown("4. scaler.pkl must match model.pkl training run")
-
-# # -----------------------------------------------------------------------------
-# # Footer
-# # -----------------------------------------------------------------------------
-# st.markdown("---")
-# st.markdown("Built by Group AJ 🎈 | Cybersecurity DLI Project")
-
-# # -----------------------------------------------------------------------------
-# # Additional Information Section
-# # -----------------------------------------------------------------------------
-# with st.sidebar:
-#     st.markdown("---")
-#     st.header("ℹ️ Information")
-    
-#     st.markdown("**Feature Extraction Status:**")
-#     if FEATURE_EXTRACTION_AVAILABLE:
-#         st.success("✅ Available")
-#     else:
-#         st.error("❌ Not Available")
-#         st.caption("Make sure feature.py is in the correct location")
-    
-#     st.markdown("**Model Status:**")
-#     if model is not None:
-#         st.success("✅ Loaded")
-#     else:
-#         st.error("❌ Not Loaded")
-    
-#     st.markdown("**Scaler Status:**")
-#     if scaler is not None:
-#         st.success("✅ Loaded")
-#     else:
-#         st.error("❌ Not Loaded")
-    
-#     with st.expander("🔧 Technical Details"):
-#         st.markdown(f"**Expected Features:** {len(EXPECTED)}")
-#         st.markdown(f"**Feature Extraction Available:** {FEATURE_EXTRACTION_AVAILABLE}")
-#         if hasattr(scaler, "feature_names_in_"):
-#             st.markdown(f"**Scaler Features:** {len(scaler.feature_names_in_)}")
-
-# #
+# Page configuration
+st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
+st.title("🔒 URL-Based Phishing Detection System")
+st.markdown("**Detect malicious URLs using machine learning and regex analysis**")
 
 # -----------------------------------------------------------------------------
-# Batch Prediction (handles URLs with or without labels)
+# Load model and scaler
+# -----------------------------------------------------------------------------
+APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent
+MODEL_DIR = ROOT_DIR / "Main_Model"
+
+def find_file(*candidates):
+    for path in candidates:
+        if path and path.is_file():
+            return path
+    return None
+
+@st.cache_resource
+def load_model():
+    model_path = find_file(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
+    if not model_path:
+        st.error("model.pkl not found")
+        return None
+    return joblib.load(model_path)
+
+@st.cache_resource
+def load_scaler():
+    scaler_path = find_file(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
+    if not scaler_path:
+        st.error("scaler.pkl not found")
+        return None
+    return joblib.load(scaler_path)
+
+model = load_model()
+scaler = load_scaler()
+
+# Get expected features from scaler
+def get_expected_features(scaler):
+    if hasattr(scaler, "feature_names_in_"):
+        return list(scaler.feature_names_in_)
+    # Default feature names if scaler doesn't have them
+    return [
+        "url_length","domain_age","subdomain_count","special_chars",
+        "https_usage","google_index","page_rank","domain_registration_length",
+        "suspicious_keywords","dots_count","hyphens_count","underscores_count",
+        "slashes_count","question_marks","equal_signs","at_symbols",
+        "ampersands","percent_signs","hash_signs","digits_count",
+        "letters_count","alexa_rank","domain_trust","ssl_certificate",
+        "redirects_count","page_load_time","has_forms","hidden_elements",
+        "external_links_ratio","image_text_ratio"
+    ]
+
+EXPECTED_FEATURES = get_expected_features(scaler) if scaler else []
+
+# -----------------------------------------------------------------------------
+# Regex Analysis Functions
+# -----------------------------------------------------------------------------
+def analyze_url_with_regex(url):
+    """Analyze URL using regex patterns for phishing indicators"""
+    results = {}
+    score = 0
+    
+    # Define regex patterns
+    patterns = {
+        'ip_address': {
+            'regex': r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',
+            'weight': 3,
+            'desc': 'Contains IP address instead of domain'
+        },
+        'suspicious_tlds': {
+            'regex': r'\.(tk|ml|ga|cf|pw|top|click|download|zip)$',
+            'weight': 2,
+            'desc': 'Uses suspicious top-level domain'
+        },
+        'url_shorteners': {
+            'regex': r'(bit\.ly|tinyurl|t\.co|goo\.gl|ow\.ly|is\.gd)',
+            'weight': 1,
+            'desc': 'Uses URL shortening service'
+        },
+        'suspicious_keywords': {
+            'regex': r'(secure|account|verify|update|confirm|login|signin)',
+            'weight': 2,
+            'desc': 'Contains suspicious keywords'
+        },
+        'excessive_subdomains': {
+            'regex': r'^https?://[^/]*\..*\..*\..*/',
+            'weight': 1,
+            'desc': 'Excessive number of subdomains'
+        },
+        'suspicious_ports': {
+            'regex': r':(8080|8000|3000|4000|5000|8888|9999)',
+            'weight': 2,
+            'desc': 'Uses non-standard ports'
+        },
+        'url_encoding': {
+            'regex': r'%[0-9a-fA-F]{2}',
+            'weight': 1,
+            'desc': 'Contains URL encoding'
+        },
+        'long_url': {
+            'regex': r'^.{100,}$',
+            'weight': 1,
+            'desc': 'Extremely long URL'
+        }
+    }
+    
+    # Check each pattern
+    for name, info in patterns.items():
+        try:
+            match = re.search(info['regex'], url, re.IGNORECASE)
+            found = bool(match)
+            results[name] = {
+                'found': found,
+                'weight': info['weight'],
+                'description': info['desc']
+            }
+            if found:
+                score += info['weight']
+        except Exception:
+            results[name] = {
+                'found': False,
+                'weight': info['weight'],
+                'description': info['desc']
+            }
+    
+    # Determine risk level
+    if score >= 6:
+        risk_level = "High Risk"
+        risk_color = "🔴"
+    elif score >= 3:
+        risk_level = "Medium Risk"
+        risk_color = "🟡"
+    else:
+        risk_level = "Low Risk"
+        risk_color = "🟢"
+    
+    return {
+        'total_score': score,
+        'risk_level': risk_level,
+        'risk_color': risk_color,
+        'patterns': results
+    }
+
+def get_regex_prediction(url):
+    """Get prediction based on regex analysis"""
+    analysis = analyze_url_with_regex(url)
+    return 1 if analysis['total_score'] >= 4 else 0
+
+# -----------------------------------------------------------------------------
+# Feature Extraction Function
+# -----------------------------------------------------------------------------
+def extract_url_features(url):
+    """Extract features from URL using FeatureExtraction class"""
+    if not FEATURE_EXTRACTION_AVAILABLE:
+        return None, "Feature extraction module not available"
+    
+    try:
+        extractor = FeatureExtraction(url)
+        features = extractor.getFeaturesList()
+        
+        # Ensure correct number of features
+        expected_count = len(EXPECTED_FEATURES)
+        if len(features) < expected_count:
+            features.extend([0] * (expected_count - len(features)))
+        elif len(features) > expected_count:
+            features = features[:expected_count]
+        
+        # Create DataFrame with expected feature names
+        feature_df = pd.DataFrame([features], columns=EXPECTED_FEATURES)
+        return feature_df, None
+        
+    except Exception as e:
+        return None, str(e)
+
+# -----------------------------------------------------------------------------
+# Parallel Processing Function
+# -----------------------------------------------------------------------------
+def process_single_url(url_data):
+    """Process a single URL with both regex and ML analysis"""
+    idx, url, use_regex_flag, use_ml_flag = url_data
+    
+    # Add protocol if missing
+    if not str(url).startswith(('http://', 'https://')):
+        url = 'https://' + str(url)
+    
+    result = {
+        'idx': idx,
+        'url': url,
+        'regex_pred': None,
+        'regex_score': None,
+        'ml_pred': None,
+        'ml_legit_prob': None,
+        'ml_phish_prob': None,
+        'error': None
+    }
+    
+    try:
+        # Regex Analysis
+        if use_regex_flag:
+            regex_analysis = analyze_url_with_regex(url)
+            result['regex_pred'] = get_regex_prediction(url)
+            result['regex_score'] = regex_analysis['total_score']
+        
+        # ML Analysis
+        if use_ml_flag:
+            features_df, error = extract_url_features(url)
+            
+            if error:
+                result['ml_pred'] = 0
+                result['ml_legit_prob'] = 1.0
+                result['ml_phish_prob'] = 0.0
+                result['error'] = f"Feature extraction failed: {error}"
+            else:
+                # Make prediction
+                X_features = features_df.values
+                X_scaled = scaler.transform(X_features)
+                
+                if hasattr(model, "predict_proba"):
+                    probabilities = model.predict_proba(X_scaled)
+                    result['ml_pred'] = np.argmax(probabilities, axis=1)[0]
+                    result['ml_legit_prob'] = probabilities[0][0]
+                    result['ml_phish_prob'] = probabilities[0][1]
+                else:
+                    result['ml_pred'] = model.predict(X_scaled)[0]
+                    result['ml_phish_prob'] = float(result['ml_pred'])
+                    result['ml_legit_prob'] = 1.0 - result['ml_phish_prob']
+    
+    except Exception as e:
+        result['error'] = str(e)
+        # Set default values
+        if use_regex_flag:
+            result['regex_pred'] = 0
+            result['regex_score'] = 0
+        if use_ml_flag:
+            result['ml_pred'] = 0
+            result['ml_legit_prob'] = 1.0
+            result['ml_phish_prob'] = 0.0
+    
+    return result
+
+# -----------------------------------------------------------------------------
+# Sidebar Configuration
+# -----------------------------------------------------------------------------
+st.sidebar.header("Input Method")
+input_method = st.sidebar.radio(
+    "Choose input method:",
+    ["URL Analysis", "Batch Prediction"]
+)
+
+st.sidebar.header("Analysis Options")
+use_regex = st.sidebar.checkbox("Enable Regex Analysis", value=True)
+use_ml_model = st.sidebar.checkbox("Enable ML Model", value=True)
+
+st.sidebar.header("Performance Settings")
+max_workers = st.sidebar.slider(
+    "Parallel Workers", 
+    min_value=1, 
+    max_value=100, 
+    value=50,
+    help="Number of URLs to process simultaneously"
+)
+
+# Status indicators
+with st.sidebar:
+    st.markdown("---")
+    st.header("System Status")
+    
+    st.markdown("**Feature Extraction:**")
+    if FEATURE_EXTRACTION_AVAILABLE:
+        st.success("✅ Available")
+    else:
+        st.error("❌ Not Available")
+    
+    st.markdown("**ML Model:**")
+    if model is not None:
+        st.success("✅ Loaded")
+    else:
+        st.error("❌ Not Loaded")
+    
+    st.markdown("**Scaler:**")
+    if scaler is not None:
+        st.success("✅ Loaded")
+    else:
+        st.error("❌ Not Loaded")
+
+# -----------------------------------------------------------------------------
+# Single URL Analysis
+# -----------------------------------------------------------------------------
+if input_method == "URL Analysis":
+    st.header("🔍 Single URL Analysis")
+    st.info("Enter a URL to analyze using regex patterns and/or machine learning model.")
+    
+    url_input = st.text_input("Enter URL:", placeholder="https://example.com")
+    
+    if st.button("🔍 Analyze URL", type="primary"):
+        if not url_input:
+            st.error("Please enter a URL")
+            st.stop()
+        
+        # Add protocol if missing
+        if not url_input.startswith(('http://', 'https://')):
+            url_input = 'https://' + url_input
+        
+        results = {}
+        
+        # Regex Analysis
+        if use_regex:
+            with st.spinner("Running regex analysis..."):
+                regex_analysis = analyze_url_with_regex(url_input)
+                results['regex'] = regex_analysis
+        
+        # ML Model Analysis
+        if use_ml_model:
+            if model is None or scaler is None:
+                st.error("Model or scaler not loaded")
+                st.stop()
+                
+            if not FEATURE_EXTRACTION_AVAILABLE:
+                st.error("Feature extraction module not available")
+                st.stop()
+            
+            with st.spinner("Running ML analysis..."):
+                try:
+                    features_df, error = extract_url_features(url_input)
+                    
+                    if error:
+                        st.error(f"Error extracting features: {error}")
+                        st.stop()
+                    
+                    # Make prediction
+                    X_features = features_df.values
+                    X_scaled = scaler.transform(X_features)
+                    
+                    if hasattr(model, "predict_proba"):
+                        probabilities = model.predict_proba(X_scaled)
+                        ml_prediction = np.argmax(probabilities, axis=1)[0]
+                        legit_prob = probabilities[0][0]
+                        phish_prob = probabilities[0][1]
+                    else:
+                        ml_prediction = model.predict(X_scaled)[0]
+                        phish_prob = float(ml_prediction)
+                        legit_prob = 1.0 - phish_prob
+                    
+                    results['ml'] = {
+                        'prediction': ml_prediction,
+                        'legit_prob': legit_prob,
+                        'phish_prob': phish_prob,
+                        'features_df': features_df
+                    }
+                    
+                except Exception as e:
+                    st.error(f"Error in ML analysis: {e}")
+        
+        # Display Results
+        st.subheader("🎯 Analysis Results")
+        
+        # Regex Results
+        if use_regex and 'regex' in results:
+            st.subheader("🔍 Regex Analysis")
+            regex_result = results['regex']
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Risk Level", f"{regex_result['risk_color']} {regex_result['risk_level']}")
+            with col2:
+                st.metric("Risk Score", regex_result['total_score'])
+            with col3:
+                regex_pred = "🔴 Phishing" if get_regex_prediction(url_input) == 1 else "🟢 Legitimate"
+                st.metric("Regex Prediction", regex_pred)
+            
+            # Pattern details
+            with st.expander("🔍 Pattern Analysis Details"):
+                for pattern_name, info in regex_result['patterns'].items():
+                    if info['found']:
+                        st.warning(f"⚠️ **{pattern_name.replace('_', ' ').title()}**: {info['description']} (Weight: {info['weight']})")
+                    else:
+                        st.success(f"✅ **{pattern_name.replace('_', ' ').title()}**: Not detected")
+        
+        # ML Results
+        if use_ml_model and 'ml' in results:
+            st.subheader("🤖 Machine Learning Analysis")
+            ml_result = results['ml']
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                status = "🔴 Phishing" if ml_result['prediction'] == 1 else "🟢 Legitimate"
+                st.metric("ML Prediction", status)
+            with col2:
+                st.metric("Legitimate Probability", f"{ml_result['legit_prob']:.2%}")
+            with col3:
+                st.metric("Phishing Probability", f"{ml_result['phish_prob']:.2%}")
+            
+            # Confidence indicator
+            confidence = max(ml_result['legit_prob'], ml_result['phish_prob'])
+            if confidence > 0.8:
+                confidence_text = "🟢 High Confidence"
+            elif confidence > 0.6:
+                confidence_text = "🟡 Medium Confidence"
+            else:
+                confidence_text = "🔴 Low Confidence"
+            
+            st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
+            
+            # Feature details
+            with st.expander("View Extracted Features"):
+                st.dataframe(ml_result['features_df'])
+        
+        # Combined Analysis
+        if use_regex and use_ml_model and 'regex' in results and 'ml' in results:
+            st.subheader("🔄 Combined Analysis")
+            
+            regex_pred = get_regex_prediction(url_input)
+            ml_pred = results['ml']['prediction']
+            
+            if regex_pred == ml_pred:
+                if regex_pred == 1:
+                    st.error("🚨 **HIGH ALERT**: Both methods predict PHISHING")
+                else:
+                    st.success("✅ **SAFE**: Both methods predict LEGITIMATE")
+            else:
+                st.warning("⚠️ **MIXED RESULTS**: Methods disagree")
+                st.write(f"Regex: {'Phishing' if regex_pred == 1 else 'Legitimate'}")
+                st.write(f"ML: {'Phishing' if ml_pred == 1 else 'Legitimate'}")
+        
+        # Security Recommendations
+        st.subheader("🛡️ Security Recommendations")
+        
+        high_risk = False
+        if use_regex and 'regex' in results and results['regex']['total_score'] >= 4:
+            high_risk = True
+        if use_ml_model and 'ml' in results and results['ml']['prediction'] == 1:
+            high_risk = True
+        
+        if high_risk:
+            st.error("⚠️ **Warning: This URL appears to be malicious!**")
+            st.markdown("""
+            **Recommendations:**
+            - Do not enter personal information
+            - Do not download files from this site
+            - Verify the URL with the legitimate organization
+            - Report this URL to security authorities
+            """)
+        else:
+            st.success("✅ **This URL appears to be legitimate**")
+            st.markdown("""
+            **Note:**
+            - Always exercise caution when sharing personal information
+            - Verify SSL certificates and site authenticity
+            """)
+
+# -----------------------------------------------------------------------------
+# Batch Prediction
 # -----------------------------------------------------------------------------
 elif input_method == "Batch Prediction":
     st.header("📊 Batch Prediction")
@@ -499,15 +498,14 @@ elif input_method == "Batch Prediction":
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
+        df.columns = df.columns.str.strip()
 
-        st.write({"rows": len(df), "cols": len(df.columns)})
-        st.write("**Data preview:**")
+        st.write(f"**Data preview:** {len(df)} rows, {len(df.columns)} columns")
         st.dataframe(df.head())
 
-        # Detect URL and label columns
-        url_columns = [c for c in df.columns if c.strip().lower() in {"url", "website", "link"}]
-        target_columns = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
+        # Detect columns
+        url_columns = [c for c in df.columns if c.lower() in {"url", "website", "link"}]
+        target_columns = [c for c in df.columns if c.lower() in {"class", "label", "target", "y"}]
         
         if not url_columns:
             st.error("❌ No URL column found. Please ensure your CSV has a column named 'url', 'website', or 'link'.")
@@ -520,16 +518,14 @@ elif input_method == "Batch Prediction":
             target_column = target_columns[0]
             st.success(f"📌 Detected: URL column '{url_column}' and label column '{target_column}'")
             st.info("Will analyze URLs and compare with provided labels for accuracy calculation.")
-            st.write({target_column: df[target_column].value_counts(dropna=False).to_dict()})
+            st.write(f"Label distribution: {dict(df[target_column].value_counts())}")
         else:
             st.success(f"📌 Detected: URL column '{url_column}' without labels")
             st.info("Will analyze URLs and provide predictions for download.")
-        
-        st.write(f"**Total URLs to process:** {len(df)}")
 
         if st.button("🚀 Run Batch Analysis", type="primary"):
             if not use_ml_model and not use_regex:
-                st.error("Please enable at least one analysis method (Regex or ML Model)")
+                st.error("Please enable at least one analysis method")
                 st.stop()
                 
             if use_ml_model and (model is None or scaler is None):
@@ -537,99 +533,77 @@ elif input_method == "Batch Prediction":
                 st.stop()
                 
             if use_ml_model and not FEATURE_EXTRACTION_AVAILABLE:
-                st.error("Feature extraction not available for ML analysis")
+                st.error("Feature extraction not available")
                 st.stop()
 
             try:
-                st.info("🔄 Processing URLs... This may take a while.")
+                st.info(f"🔄 Processing {len(df)} URLs using {max_workers} parallel workers...")
                 
-                # Initialize results lists
+                # Prepare data for parallel processing
+                url_data = [(idx, row[url_column], use_regex, use_ml_model) 
+                           for idx, row in df.iterrows()]
+                
+                # Process URLs in parallel
+                results = {}
+                failed_urls = []
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                completed = 0
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_url = {executor.submit(process_single_url, data): data for data in url_data}
+                    
+                    for future in as_completed(future_to_url):
+                        try:
+                            result = future.result()
+                            results[result['idx']] = result
+                            
+                            if result['error']:
+                                failed_urls.append(result['url'])
+                            
+                            completed += 1
+                            progress = completed / len(df)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Completed: {completed}/{len(df)} URLs ({progress:.1%})")
+                            
+                        except Exception as e:
+                            url_info = future_to_url[future]
+                            failed_urls.append(url_info[1])
+                            completed += 1
+                
+                progress_bar.empty()
+                status_text.empty()
+                
+                if failed_urls:
+                    st.warning(f"⚠️ Analysis failed for {len(failed_urls)} URLs out of {len(df)} total.")
+                
+                # Organize results
                 regex_predictions = []
                 ml_predictions = []
                 ml_legit_probs = []
                 ml_phish_probs = []
                 regex_scores = []
-                failed_urls = []
                 
-                # Create progress bar
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                for idx, row in df.iterrows():
-                    url = row[url_column]
-                    status_text.text(f"Processing URL {idx + 1}/{len(df)}: {url[:50]}...")
-                    
-                    # Add protocol if missing
-                    if not str(url).startswith(('http://', 'https://')):
-                        url = 'https://' + str(url)
-                    
-                    # Regex Analysis
-                    if use_regex:
-                        try:
-                            regex_analysis = analyze_url_with_regex(url)
-                            regex_pred = get_regex_prediction(url)
-                            regex_predictions.append(regex_pred)
-                            regex_scores.append(regex_analysis['total_score'])
-                        except Exception as e:
-                            st.warning(f"Regex analysis failed for {url}: {e}")
-                            regex_predictions.append(0)  # Default to legitimate
+                for idx in range(len(df)):
+                    if idx in results:
+                        result = results[idx]
+                        if use_regex:
+                            regex_predictions.append(result['regex_pred'] if result['regex_pred'] is not None else 0)
+                            regex_scores.append(result['regex_score'] if result['regex_score'] is not None else 0)
+                        if use_ml_model:
+                            ml_predictions.append(result['ml_pred'] if result['ml_pred'] is not None else 0)
+                            ml_legit_probs.append(result['ml_legit_prob'] if result['ml_legit_prob'] is not None else 1.0)
+                            ml_phish_probs.append(result['ml_phish_prob'] if result['ml_phish_prob'] is not None else 0.0)
+                    else:
+                        # Default values for missing results
+                        if use_regex:
+                            regex_predictions.append(0)
                             regex_scores.append(0)
-                    
-                    # ML Analysis
-                    if use_ml_model:
-                        try:
-                            features_df, error = extract_url_features(url)
-                            
-                            if error:
-                                # Use default values for failed feature extraction
-                                ml_predictions.append(0)
-                                ml_legit_probs.append(1.0)
-                                ml_phish_probs.append(0.0)
-                                failed_urls.append(url)
-                            else:
-                                # Adjust features to match model expectations
-                                if len(features_df.columns) != len(EXPECTED):
-                                    feature_values = features_df.iloc[0].tolist()
-                                    if len(feature_values) < len(EXPECTED):
-                                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                                    elif len(feature_values) > len(EXPECTED):
-                                        feature_values = feature_values[:len(EXPECTED)]
-                                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                                
-                                # Make prediction
-                                X_features = features_df.values
-                                X_scaled = scaler.transform(X_features)
-                                
-                                if hasattr(model, "predict_proba"):
-                                    probabilities = model.predict_proba(X_scaled)
-                                    ml_pred = np.argmax(probabilities, axis=1)[0]
-                                    legit_prob = probabilities[0][0]
-                                    phish_prob = probabilities[0][1]
-                                else:
-                                    ml_pred = model.predict(X_scaled)[0]
-                                    phish_prob = float(ml_pred)
-                                    legit_prob = 1.0 - phish_prob
-                                
-                                ml_predictions.append(ml_pred)
-                                ml_legit_probs.append(legit_prob)
-                                ml_phish_probs.append(phish_prob)
-                        
-                        except Exception as e:
-                            st.warning(f"ML analysis failed for {url}: {e}")
+                        if use_ml_model:
                             ml_predictions.append(0)
                             ml_legit_probs.append(1.0)
                             ml_phish_probs.append(0.0)
-                            failed_urls.append(url)
-                    
-                    # Update progress
-                    progress_bar.progress((idx + 1) / len(df))
-                
-                # Clear progress indicators
-                progress_bar.empty()
-                status_text.empty()
-                
-                if failed_urls:
-                    st.warning(f"⚠️ Analysis failed for {len(failed_urls)} URLs. Using default values.")
                 
                 # Create results DataFrame
                 results_df = df.copy()
@@ -637,2359 +611,212 @@ elif input_method == "Batch Prediction":
                 if use_regex:
                     results_df["Regex_Prediction"] = regex_predictions
                     results_df["Regex_Score"] = regex_scores
-                    results_df["Regex_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in regex_predictions]
                 
                 if use_ml_model:
                     results_df["ML_Prediction"] = ml_predictions
-                    results_df["ML_Legitimate_Prob"] = ml_legit_probs
-                    results_df["ML_Phishing_Prob"] = ml_phish_probs
-                    results_df["ML_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in ml_predictions]
+                    results_df["ML_Legit_Prob"] = ml_legit_probs
+                    results_df["ML_Phish_Prob"] = ml_phish_probs
                 
-                # Create combined prediction if both methods are used
+                # Combined prediction
                 if use_regex and use_ml_model:
                     combined_predictions = []
                     for i in range(len(df)):
-                        # If either method predicts phishing, mark as phishing
                         if regex_predictions[i] == 1 or ml_predictions[i] == 1:
                             combined_predictions.append(1)
                         else:
                             combined_predictions.append(0)
                     results_df["Combined_Prediction"] = combined_predictions
-                    results_df["Combined_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in combined_predictions]
                 
-                st.success("✅ Batch analysis completed successfully!")
+                st.success(f"✅ Batch analysis completed! Processed {len(df)} URLs.")
 
                 # Display Summary
                 st.subheader("📊 Analysis Summary")
-                col1,# -----------------------------------------------------------------------------
-# Regex-based URL analysis functions
-# -----------------------------------------------------------------------------
-import re
-
-def analyze_url_with_regex(url):
-    """Analyze URL using regex patterns for common phishing indicators"""
-    results = {}
-    
-    # Suspicious patterns
-    suspicious_patterns = {
-        'ip_address': r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',
-        'suspicious_tlds': r'\.(tk|ml|ga|cf|pw|top|click|download|zip)# app.py — Streamlit UI for model.pkl + scaler.pkl with integrated feature extraction
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-import warnings
-from pathlib import Path
-import sys
-import os
-
-# Add the current directory to Python path to import feature.py
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
-sys.path.append(str(current_dir.parent))  # Also add parent directory
-
-try:
-    from feature import FeatureExtraction
-    FEATURE_EXTRACTION_AVAILABLE = True
-except ImportError as e:
-    # Try alternative import methods
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-        feature_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(feature_module)
-        FeatureExtraction = feature_module.FeatureExtraction
-        FEATURE_EXTRACTION_AVAILABLE = True
-    except Exception as e2:
-        st.warning(f"Feature extraction not available: {e}")
-        st.caption("Make sure feature.py is in the same directory as app.py and all dependencies are installed:")
-        st.code("pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
-        FEATURE_EXTRACTION_AVAILABLE = False
-
-warnings.filterwarnings("ignore")
-
-# -----------------------------------------------------------------------------
-# Page configuration
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-st.title("🔒 URL-Based Phishing Detection System")
-st.markdown("**Detect malicious URLs using machine learning**")
-
-# -----------------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent
-ROOT_DIR = APP_DIR.parent
-MODEL_DIR = ROOT_DIR / "Main_Model"
-
-def _pick(*cands):
-    for p in cands:
-        if p and p.is_file():
-            return p
-    return None
-
-# -----------------------------------------------------------------------------
-# Load backup model (RandomForest on SCALED features) + external scaler
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_model():
-    p = _pick(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-    if not p:
-        st.error("model.pkl not found")
-        st.caption(f"Tried: {[str(x) for x in [MODEL_DIR/'model.pkl', APP_DIR/'model.pkl', ROOT_DIR/'model.pkl']]}")
-        return None
-    return joblib.load(p)
-
-@st.cache_resource
-def load_scaler():
-    p = _pick(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-    if not p:
-        st.error("scaler.pkl not found (required for model.pkl)")
-        return None
-    return joblib.load(p)
-
-model = load_model()
-scaler = load_scaler()
-
-def _uses_internal_scaler(_):
-    # model is a plain RF, so False
-    return False
-
-# -----------------------------------------------------------------------------
-# Feature extraction function
-# -----------------------------------------------------------------------------
-def extract_url_features(url):
-    """Extract features from URL using the FeatureExtraction class"""
-    if not FEATURE_EXTRACTION_AVAILABLE:
-        raise ImportError("Feature extraction module not available")
-    
-    try:
-        # Initialize feature extractor
-        extractor = FeatureExtraction(url)
-        
-        # Get the features list
-        features = extractor.getFeaturesList()
-        
-        # Define feature names based on the FeatureExtraction class methods
-        feature_names = [
-            'UsingIp', 'longUrl', 'shortUrl', 'symbol', 'redirecting',
-            'prefixSuffix', 'SubDomains', 'Hppts', 'DomainRegLen', 'Favicon',
-            'NonStdPort', 'HTTPSDomainURL', 'RequestURL', 'AnchorURL', 'LinksInScriptTags',
-            'ServerFormHandler', 'InfoEmail', 'AbnormalURL', 'WebsiteForwarding', 'StatusBarCust',
-            'DisableRightClick', 'UsingPopupWindow', 'IframeRedirection', 'AgeofDomain', 'DNSRecording',
-            'WebsiteTraffic', 'PageRank', 'GoogleIndex', 'LinksPointingToPage', 'StatsReport'
-        ]
-        
-        # Create DataFrame with extracted features
-        feature_df = pd.DataFrame([features], columns=feature_names)
-        
-        return feature_df, None  # Return DataFrame and no error
-        
-    except Exception as e:
-        return None, str(e)
-
-# -----------------------------------------------------------------------------
-# Canonical training feature names
-# Prefer scaler.feature_names_in_ to guarantee exact match for transform()
-# -----------------------------------------------------------------------------
-def _resolve_expected(scaler):
-    if hasattr(scaler, "feature_names_in_"):
-        return list(scaler.feature_names_in_)
-    # fallback: manual list of 30 features (must match your training CSV headers)
-    return [
-        "url_length","domain_age","subdomain_count","special_chars",
-        "https_usage","google_index","page_rank","domain_registration_length",
-        "suspicious_keywords","dots_count","hyphens_count","underscores_count",
-        "slashes_count","question_marks","equal_signs","at_symbols",
-        "ampersands","percent_signs","hash_signs","digits_count",
-        "letters_count","alexa_rank","domain_trust","ssl_certificate",
-        "redirects_count","page_load_time","has_forms","hidden_elements",
-        "external_links_ratio","image_text_ratio"
-    ]
-
-EXPECTED = _resolve_expected(scaler)
-
-# Diagnostics
-DEBUG = False  # set True when you want to see developer info
-if DEBUG:
-    st.caption(f"len(EXPECTED)={len(EXPECTED)}")
-    if hasattr(scaler, "feature_names_in_"):
-        st.caption(f"Scaler expects: {list(scaler.feature_names_in_)}")
-
-# -----------------------------------------------------------------------------
-# Sidebar
-# -----------------------------------------------------------------------------
-st.sidebar.header("Input Method")
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["URL Analysis", "Batch Prediction"]
-)
-
-# -----------------------------------------------------------------------------
-# URL Analysis
-# -----------------------------------------------------------------------------
-if input_method == "URL Analysis":
-    st.header("🔍 Single URL Analysis")
-    st.info("Enter a URL to extract features automatically and detect phishing.")
-    
-    url_input = st.text_input("Enter URL:", placeholder="https://example.com")
-    
-    if st.button("🔍 Analyze URL", type="primary"):
-        if not url_input:
-            st.error("Please enter a URL")
-            st.stop()
-            
-        if model is None or scaler is None:
-            st.error("Model or scaler not loaded")
-            st.stop()
-            
-        if not FEATURE_EXTRACTION_AVAILABLE:
-            st.error("Feature extraction module not available. Please ensure feature.py is in the correct location.")
-            st.stop()
-        
-        # Add protocol if missing
-        if not url_input.startswith(('http://', 'https://')):
-            url_input = 'https://' + url_input
-        
-        with st.spinner("Extracting features from URL..."):
-            try:
-                # Extract features
-                features_df, error = extract_url_features(url_input)
                 
-                if error:
-                    st.error(f"Error extracting features: {error}")
-                    st.stop()
-                
-                st.success("✅ Features extracted successfully!")
-                
-                # Display extracted features
-                with st.expander("View Extracted Features"):
-                    st.dataframe(features_df)
-                
-                # Debug info
-                st.info(f"Extracted {len(features_df.columns)} features, model expects {len(EXPECTED)}")
-                
-                # Force the features to match exactly what the model expects
-                if len(features_df.columns) != len(EXPECTED):
-                    st.warning(f"Adjusting feature count from {len(features_df.columns)} to {len(EXPECTED)}")
-                    
-                    # Get the feature values as a list
-                    feature_values = features_df.iloc[0].tolist()
-                    
-                    # Adjust the feature count
-                    if len(feature_values) < len(EXPECTED):
-                        # Add zeros for missing features
-                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                        st.info(f"Added {len(EXPECTED) - len(features_df.columns)} padding features")
-                    elif len(feature_values) > len(EXPECTED):
-                        # Trim extra features
-                        feature_values = feature_values[:len(EXPECTED)]
-                        st.info(f"Trimmed to first {len(EXPECTED)} features")
-                    
-                    # Create new DataFrame with correct feature count and names
-                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                    st.success(f"✅ Features adjusted to match model expectations ({len(EXPECTED)} features)")
-                
-                # Convert to numpy array for prediction
-                X_features = features_df.values
-                
-                # Apply scaler
-                try:
-                    X_scaled = scaler.transform(X_features)
-                except Exception as e:
-                    st.error(f"Error applying scaler: {e}")
-                    st.error("This might be due to feature format issues.")
-                    st.error("Debug info:")
-                    st.write(f"Features shape: {X_features.shape}")
-                    st.write(f"Features DataFrame columns: {len(features_df.columns)}")
-                    if hasattr(scaler, "n_features_in_"):
-                        st.write(f"Scaler expects: {scaler.n_features_in_} features")
-                    st.stop()
-                
-                # Make prediction
-                try:
-                    if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(X_scaled)
-                        prediction = np.argmax(probabilities, axis=1)[0]
-                        legit_prob = probabilities[0][0]
-                        phish_prob = probabilities[0][1]
-                    else:
-                        prediction = model.predict(X_scaled)[0]
-                        phish_prob = float(prediction)
-                        legit_prob = 1.0 - phish_prob
-                    
-                    # Display results
-                    st.subheader("🎯 Prediction Results")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        status = "🔴 Phishing" if prediction == 1 else "🟢 Legitimate"
-                        st.metric("Status", status)
-                    
-                    with col2:
-                        st.metric("Legitimate Probability", f"{legit_prob:.2%}")
-                    
-                    with col3:
-                        st.metric("Phishing Probability", f"{phish_prob:.2%}")
-                    
-                    # Confidence indicator
-                    confidence = max(legit_prob, phish_prob)
-                    if confidence > 0.8:
-                        confidence_text = "🟢 High Confidence"
-                    elif confidence > 0.6:
-                        confidence_text = "🟡 Medium Confidence"
-                    else:
-                        confidence_text = "🔴 Low Confidence"
-                    
-                    st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
-                    
-                    # Additional analysis
-                    st.subheader("📊 Detailed Analysis")
-                    
-                    if prediction == 1:  # Phishing
-                        st.error("⚠️ **Warning: This URL appears to be malicious!**")
-                        st.markdown("""
-                        **Recommendations:**
-                        - Do not enter personal information
-                        - Do not download files from this site
-                        - Verify the URL with the legitimate organization
-                        - Report this URL to security authorities
-                        """)
-                    else:  # Legitimate
-                        st.success("✅ **This URL appears to be legitimate**")
-                        st.markdown("""
-                        **Note:**
-                        - This analysis is based on URL characteristics only
-                        - Always exercise caution when sharing personal information
-                        - Verify SSL certificates and site authenticity
-                        """)
-                    
-                except Exception as e:
-                    st.error(f"Error making prediction: {e}")
-                    
-            except Exception as e:
-                st.error(f"Unexpected error during analysis: {e}")
-                st.markdown("**Troubleshooting tips:**")
-                st.markdown("- Check if the URL is accessible")
-                st.markdown("- Ensure you have internet connectivity")
-                st.markdown("- Try with a different URL format")
-
-# -----------------------------------------------------------------------------
-# Batch Prediction (handles both pre-extracted features and raw URLs)
-# -----------------------------------------------------------------------------
-elif input_method == "Batch Prediction":
-    st.header("📊 Batch Prediction")
-    st.info("Upload a CSV file with URLs (and optionally labels) for batch analysis, or pre-extracted features.")
-    
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-
-        st.write({"rows": len(df), "cols": len(df.columns)})
-        st.write("**Data preview:**")
-        st.dataframe(df.head())
-
-        # Check if this is a URL-only file or a features file
-        url_columns = [c for c in df.columns if c.strip().lower() in {"url", "website", "link"}]
-        target_columns = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-        
-        is_url_file = bool(url_columns) and len(df.columns) <= 3  # URL + maybe label + maybe index
-        is_feature_file = len(df.columns) >= 10  # Likely has extracted features
-        
-        if is_url_file:
-            st.success("📌 Detected URL-based file. Will extract features automatically.")
-            url_column = url_columns[0]
-            
-            if target_columns:
-                st.info(f"Found target column: {target_columns[0]}")
-                target_column = target_columns[0]
-                st.write({target_column: df[target_column].value_counts(dropna=False).to_dict()})
-            else:
-                target_column = None
-                
-        elif is_feature_file:
-            st.success("📌 Detected feature-based file. Will use existing features.")
-            target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-            if target_like:
-                st.info(f"Found target-like columns: {target_like}. They will be dropped for prediction.")
-                for tcol in target_like:
-                    try:
-                        st.write({tcol: df[tcol].value_counts(dropna=False).to_dict()})
-                    except Exception:
-                        pass
-        else:
-            st.warning("⚠️ Cannot determine file type. Please ensure your CSV has either:")
-            st.markdown("- A 'url' column for automatic feature extraction, OR")
-            st.markdown("- Pre-extracted features matching the expected format")
-            st.stop()
-
-        st.write(f"**Columns in file:** {list(df.columns)}")
-        st.write(f"**Number of columns:** {len(df.columns)}")
-        
-        if is_feature_file:
-            st.write(f"**Expected feature columns:** {EXPECTED}")
-
-        if st.button("🚀 Run Batch Prediction", type="primary"):
-            if model is None or scaler is None:
-                st.error("Model or scaler not loaded")
-                st.stop()
-
-            try:
-                if is_url_file:
-                    # Extract features from URLs
-                    if not FEATURE_EXTRACTION_AVAILABLE:
-                        st.error("Feature extraction not available for URL processing")
-                        st.stop()
-                    
-                    st.info("🔄 Extracting features from URLs... This may take a while.")
-                    
-                    all_features = []
-                    failed_urls = []
-                    
-                    # Create progress bar
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    for idx, row in df.iterrows():
-                        url = row[url_column]
-                        status_text.text(f"Processing URL {idx + 1}/{len(df)}: {url[:50]}...")
-                        
-                        try:
-                            # Add protocol if missing
-                            if not str(url).startswith(('http://', 'https://')):
-                                url = 'https://' + str(url)
-                            
-                            features_df, error = extract_url_features(url)
-                            
-                            if error:
-                                st.warning(f"Failed to extract features for {url}: {error}")
-                                # Use default/zero features for failed URLs
-                                features = [0] * len(EXPECTED)
-                                failed_urls.append(url)
-                            else:
-                                features = features_df.iloc[0].tolist()
-                            
-                            all_features.append(features)
-                            
-                        except Exception as e:
-                            st.warning(f"Error processing {url}: {str(e)}")
-                            features = [0] * len(EXPECTED)
-                            all_features.append(features)
-                            failed_urls.append(url)
-                        
-                        # Update progress
-                        progress_bar.progress((idx + 1) / len(df))
-                    
-                    # Clear progress indicators
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    if failed_urls:
-                        st.warning(f"⚠️ Failed to extract features for {len(failed_urls)} URLs. Using default values.")
-                    
-                    # Create features DataFrame
-                    features_df = pd.DataFrame(all_features, columns=EXPECTED)
-                    
-                    st.success(f"✅ Feature extraction completed for {len(df)} URLs!")
-                    
-                else:
-                    # Use existing features (original logic)
-                    target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-                    features_df = df.drop(columns=target_like, errors="ignore").copy()
-
-                    # Require exact set and order of features
-                    missing = [c for c in EXPECTED if c not in features_df.columns]
-                    extra   = [c for c in features_df.columns if c not in EXPECTED]
-                    if missing or extra:
-                        st.error("❌ Columns mismatch")
-                        st.write({"missing": missing, "extra": extra})
-                        st.stop()
-
-                    features_df = features_df[EXPECTED]
-
-                # Ensure numeric
-                features_df = features_df.apply(pd.to_numeric, errors="coerce")
-                if features_df.isna().any().any():
-                    st.error("❌ Non-numeric values detected after coercion")
-                    st.write(features_df.isna().sum())
-                    st.stop()
-
-                # External scaler path
-                if hasattr(scaler, "feature_names_in_"):
-                    if list(scaler.feature_names_in_) != list(EXPECTED):
-                        st.error("Scaler feature-name order does not match EXPECTED")
-                        st.stop()
-                X_in = scaler.transform(features_df)
-
-                # Predict
-                if hasattr(model, "predict_proba"):
-                    probabilities = model.predict_proba(X_in)
-                    predictions = np.argmax(probabilities, axis=1)
-                    legit_prob = probabilities[:, 0]
-                    phish_prob = probabilities[:, 1]
-                else:
-                    predictions = model.predict(X_in)
-                    phish_prob = predictions.astype(float)
-                    legit_prob = 1.0 - phish_prob
-
-                # Assemble results
-                results_df = df.copy()
-                results_df["Prediction"] = predictions
-                results_df["Legitimate_Prob"] = legit_prob
-                results_df["Phishing_Prob"] = phish_prob
-                results_df["Status"] = results_df["Prediction"].map({0: "Legitimate", 1: "Phishing"})
-
-                st.success("✅ Batch prediction completed successfully!")
-
-                st.subheader("📊 Prediction Summary")
                 col1, col2, col3 = st.columns(3)
-                with col1: 
-                    st.metric("Total URLs", len(results_df))
-                with col2: 
-                    legit_count = int((predictions == 0).sum())
-                    st.metric("Legitimate", legit_count, delta=f"{legit_count/len(results_df)*100:.1f}%")
-                with col3: 
-                    phish_count = int((predictions == 1).sum())
-                    st.metric("Phishing", phish_count, delta=f"{phish_count/len(results_df)*100:.1f}%")
-
-                # Determine display columns based on file type
-                if is_url_file:
-                    display_columns = [url_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_column:
-                        display_columns = [url_column, target_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                else:
-                    display_columns = ["Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_like:
-                        display_columns = [target_like[0]] + display_columns
-
-                st.subheader("🔍 Detailed Results")
-                
-                # Filter options
-                col1, col2 = st.columns(2)
                 with col1:
-                    status_filter = st.selectbox("Filter by Status:", ["All", "Legitimate", "Phishing"])
-                with col2:
-                    confidence_threshold = st.slider("Minimum Confidence:", 0.0, 1.0, 0.0, 0.1)
-                
-                # Apply filters
-                filtered_df = results_df.copy()
-                if status_filter != "All":
-                    filtered_df = filtered_df[filtered_df["Status"] == status_filter]
-                
-                if confidence_threshold > 0:
-                    filtered_df = filtered_df[
-                        (filtered_df["Legitimate_Prob"] >= confidence_threshold) | 
-                        (filtered_df["Phishing_Prob"] >= confidence_threshold)
-                    ]
-                
-                st.dataframe(filtered_df[display_columns], use_container_width=True)
-
-                # Calculate accuracy if target column exists
-                if is_url_file and target_column:
-                    try:
-                        # Handle both numeric (0/1) and text (benign/phishing) labels
-                        target_values = df[target_column].copy()
-                        
-                        # Convert text labels to numeric if needed
-                        if target_values.dtype == 'object':
-                            # Map text labels to numeric
-                            label_mapping = {
-                                'benign': 0, 'legitimate': 0, 'safe': 0, 'good': 0,
-                                'phishing': 1, 'malicious': 1, 'bad': 1, 'unsafe': 1
-                            }
-                            target_values = target_values.str.lower().map(label_mapping)
-                        
-                        # Check if we have valid binary labels
-                        uniq = set(pd.Series(target_values).dropna().unique())
-                        if uniq <= {0, 1}:
-                            acc = (predictions == target_values.to_numpy()).mean()
-                            st.metric(f"Accuracy vs '{target_column}'", f"{acc:.1%}")
-                        else:
-                            st.info(f"Cannot calculate accuracy - found labels: {sorted(uniq)}")
-                    except Exception as e:
-                        st.warning(f"Could not calculate accuracy: {e}")
-                elif not is_url_file:
-                    # Original accuracy calculation for feature files
-                    for tcol in target_like:
-                        try:
-                            uniq = set(pd.Series(df[tcol]).dropna().unique())
-                            if uniq <= {0,1}:
-                                acc = (predictions == df[tcol].to_numpy()).mean()
-                                st.metric(f"Accuracy vs '{tcol}'", f"{acc:.1%}")
-                                break
-                        except Exception:
-                            pass
-
-                # Download
-                csv = results_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Complete Results CSV",
-                    data=csv,
-                    file_name="phishing_predictions.csv",
-                    mime="text/csv",
-                )
-
-            except Exception as e:
-                st.error(f"❌ Error in batch prediction: {e}")
-                st.markdown("**Troubleshooting:**")
-                if is_url_file:
-                    st.markdown("1. Ensure URLs are properly formatted")
-                    st.markdown("2. Check internet connectivity for feature extraction")
-                    st.markdown("3. Some URLs may fail - this is normal")
-                else:
-                    st.markdown("1. Headers must exactly match the expected feature names")
-                    st.markdown("2. Remove any target column (class/label/target/y)")
-                    st.markdown("3. All values must be numeric")
-                    st.markdown("4. scaler.pkl must match model.pkl training run")
-
-# -----------------------------------------------------------------------------
-# Footer
-# -----------------------------------------------------------------------------
-st.markdown("---")
-st.markdown("Built by Group AJ 🎈 | Cybersecurity DLI Project")
-
-# -----------------------------------------------------------------------------
-# Additional Information Section
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("---")
-    st.header("ℹ️ Information")
-    
-    st.markdown("**Feature Extraction Status:**")
-    if FEATURE_EXTRACTION_AVAILABLE:
-        st.success("✅ Available")
-    else:
-        st.error("❌ Not Available")
-        st.caption("Make sure feature.py is in the correct location")
-    
-    st.markdown("**Model Status:**")
-    if model is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    st.markdown("**Scaler Status:**")
-    if scaler is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    with st.expander("🔧 Technical Details"):
-        st.markdown(f"**Expected Features:** {len(EXPECTED)}")
-        st.markdown(f"**Feature Extraction Available:** {FEATURE_EXTRACTION_AVAILABLE}")
-        if hasattr(scaler, "feature_names_in_"):
-            st.markdown(f"**Scaler Features:** {len(scaler.feature_names_in_)}")
-,
-        'url_shorteners': r'(bit\.ly|tinyurl|t\.co|goo\.gl|ow\.ly|is\.gd|buff\.ly)',
-        'suspicious_subdomains': r'(secure|account|verify|update|confirm|login|signin)',
-        'hom# app.py — Streamlit UI for model.pkl + scaler.pkl with integrated feature extraction
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-import warnings
-from pathlib import Path
-import sys
-import os
-
-# Add the current directory to Python path to import feature.py
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
-sys.path.append(str(current_dir.parent))  # Also add parent directory
-
-try:
-    from feature import FeatureExtraction
-    FEATURE_EXTRACTION_AVAILABLE = True
-except ImportError as e:
-    # Try alternative import methods
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-        feature_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(feature_module)
-        FeatureExtraction = feature_module.FeatureExtraction
-        FEATURE_EXTRACTION_AVAILABLE = True
-    except Exception as e2:
-        st.warning(f"Feature extraction not available: {e}")
-        st.caption("Make sure feature.py is in the same directory as app.py and all dependencies are installed:")
-        st.code("pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
-        FEATURE_EXTRACTION_AVAILABLE = False
-
-warnings.filterwarnings("ignore")
-
-# -----------------------------------------------------------------------------
-# Page configuration
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-st.title("🔒 URL-Based Phishing Detection System")
-st.markdown("**Detect malicious URLs using machine learning**")
-
-# -----------------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent
-ROOT_DIR = APP_DIR.parent
-MODEL_DIR = ROOT_DIR / "Main_Model"
-
-def _pick(*cands):
-    for p in cands:
-        if p and p.is_file():
-            return p
-    return None
-
-# -----------------------------------------------------------------------------
-# Load backup model (RandomForest on SCALED features) + external scaler
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_model():
-    p = _pick(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-    if not p:
-        st.error("model.pkl not found")
-        st.caption(f"Tried: {[str(x) for x in [MODEL_DIR/'model.pkl', APP_DIR/'model.pkl', ROOT_DIR/'model.pkl']]}")
-        return None
-    return joblib.load(p)
-
-@st.cache_resource
-def load_scaler():
-    p = _pick(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-    if not p:
-        st.error("scaler.pkl not found (required for model.pkl)")
-        return None
-    return joblib.load(p)
-
-model = load_model()
-scaler = load_scaler()
-
-def _uses_internal_scaler(_):
-    # model is a plain RF, so False
-    return False
-
-# -----------------------------------------------------------------------------
-# Feature extraction function
-# -----------------------------------------------------------------------------
-def extract_url_features(url):
-    """Extract features from URL using the FeatureExtraction class"""
-    if not FEATURE_EXTRACTION_AVAILABLE:
-        raise ImportError("Feature extraction module not available")
-    
-    try:
-        # Initialize feature extractor
-        extractor = FeatureExtraction(url)
-        
-        # Get the features list
-        features = extractor.getFeaturesList()
-        
-        # Define feature names based on the FeatureExtraction class methods
-        feature_names = [
-            'UsingIp', 'longUrl', 'shortUrl', 'symbol', 'redirecting',
-            'prefixSuffix', 'SubDomains', 'Hppts', 'DomainRegLen', 'Favicon',
-            'NonStdPort', 'HTTPSDomainURL', 'RequestURL', 'AnchorURL', 'LinksInScriptTags',
-            'ServerFormHandler', 'InfoEmail', 'AbnormalURL', 'WebsiteForwarding', 'StatusBarCust',
-            'DisableRightClick', 'UsingPopupWindow', 'IframeRedirection', 'AgeofDomain', 'DNSRecording',
-            'WebsiteTraffic', 'PageRank', 'GoogleIndex', 'LinksPointingToPage', 'StatsReport'
-        ]
-        
-        # Create DataFrame with extracted features
-        feature_df = pd.DataFrame([features], columns=feature_names)
-        
-        return feature_df, None  # Return DataFrame and no error
-        
-    except Exception as e:
-        return None, str(e)
-
-# -----------------------------------------------------------------------------
-# Canonical training feature names
-# Prefer scaler.feature_names_in_ to guarantee exact match for transform()
-# -----------------------------------------------------------------------------
-def _resolve_expected(scaler):
-    if hasattr(scaler, "feature_names_in_"):
-        return list(scaler.feature_names_in_)
-    # fallback: manual list of 30 features (must match your training CSV headers)
-    return [
-        "url_length","domain_age","subdomain_count","special_chars",
-        "https_usage","google_index","page_rank","domain_registration_length",
-        "suspicious_keywords","dots_count","hyphens_count","underscores_count",
-        "slashes_count","question_marks","equal_signs","at_symbols",
-        "ampersands","percent_signs","hash_signs","digits_count",
-        "letters_count","alexa_rank","domain_trust","ssl_certificate",
-        "redirects_count","page_load_time","has_forms","hidden_elements",
-        "external_links_ratio","image_text_ratio"
-    ]
-
-EXPECTED = _resolve_expected(scaler)
-
-# Diagnostics
-DEBUG = False  # set True when you want to see developer info
-if DEBUG:
-    st.caption(f"len(EXPECTED)={len(EXPECTED)}")
-    if hasattr(scaler, "feature_names_in_"):
-        st.caption(f"Scaler expects: {list(scaler.feature_names_in_)}")
-
-# -----------------------------------------------------------------------------
-# Sidebar
-# -----------------------------------------------------------------------------
-st.sidebar.header("Input Method")
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["URL Analysis", "Batch Prediction"]
-)
-
-# -----------------------------------------------------------------------------
-# URL Analysis
-# -----------------------------------------------------------------------------
-if input_method == "URL Analysis":
-    st.header("🔍 Single URL Analysis")
-    st.info("Enter a URL to extract features automatically and detect phishing.")
-    
-    url_input = st.text_input("Enter URL:", placeholder="https://example.com")
-    
-    if st.button("🔍 Analyze URL", type="primary"):
-        if not url_input:
-            st.error("Please enter a URL")
-            st.stop()
-            
-        if model is None or scaler is None:
-            st.error("Model or scaler not loaded")
-            st.stop()
-            
-        if not FEATURE_EXTRACTION_AVAILABLE:
-            st.error("Feature extraction module not available. Please ensure feature.py is in the correct location.")
-            st.stop()
-        
-        # Add protocol if missing
-        if not url_input.startswith(('http://', 'https://')):
-            url_input = 'https://' + url_input
-        
-        with st.spinner("Extracting features from URL..."):
-            try:
-                # Extract features
-                features_df, error = extract_url_features(url_input)
-                
-                if error:
-                    st.error(f"Error extracting features: {error}")
-                    st.stop()
-                
-                st.success("✅ Features extracted successfully!")
-                
-                # Display extracted features
-                with st.expander("View Extracted Features"):
-                    st.dataframe(features_df)
-                
-                # Debug info
-                st.info(f"Extracted {len(features_df.columns)} features, model expects {len(EXPECTED)}")
-                
-                # Force the features to match exactly what the model expects
-                if len(features_df.columns) != len(EXPECTED):
-                    st.warning(f"Adjusting feature count from {len(features_df.columns)} to {len(EXPECTED)}")
-                    
-                    # Get the feature values as a list
-                    feature_values = features_df.iloc[0].tolist()
-                    
-                    # Adjust the feature count
-                    if len(feature_values) < len(EXPECTED):
-                        # Add zeros for missing features
-                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                        st.info(f"Added {len(EXPECTED) - len(features_df.columns)} padding features")
-                    elif len(feature_values) > len(EXPECTED):
-                        # Trim extra features
-                        feature_values = feature_values[:len(EXPECTED)]
-                        st.info(f"Trimmed to first {len(EXPECTED)} features")
-                    
-                    # Create new DataFrame with correct feature count and names
-                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                    st.success(f"✅ Features adjusted to match model expectations ({len(EXPECTED)} features)")
-                
-                # Convert to numpy array for prediction
-                X_features = features_df.values
-                
-                # Apply scaler
-                try:
-                    X_scaled = scaler.transform(X_features)
-                except Exception as e:
-                    st.error(f"Error applying scaler: {e}")
-                    st.error("This might be due to feature format issues.")
-                    st.error("Debug info:")
-                    st.write(f"Features shape: {X_features.shape}")
-                    st.write(f"Features DataFrame columns: {len(features_df.columns)}")
-                    if hasattr(scaler, "n_features_in_"):
-                        st.write(f"Scaler expects: {scaler.n_features_in_} features")
-                    st.stop()
-                
-                # Make prediction
-                try:
-                    if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(X_scaled)
-                        prediction = np.argmax(probabilities, axis=1)[0]
-                        legit_prob = probabilities[0][0]
-                        phish_prob = probabilities[0][1]
-                    else:
-                        prediction = model.predict(X_scaled)[0]
-                        phish_prob = float(prediction)
-                        legit_prob = 1.0 - phish_prob
-                    
-                    # Display results
-                    st.subheader("🎯 Prediction Results")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        status = "🔴 Phishing" if prediction == 1 else "🟢 Legitimate"
-                        st.metric("Status", status)
-                    
-                    with col2:
-                        st.metric("Legitimate Probability", f"{legit_prob:.2%}")
-                    
-                    with col3:
-                        st.metric("Phishing Probability", f"{phish_prob:.2%}")
-                    
-                    # Confidence indicator
-                    confidence = max(legit_prob, phish_prob)
-                    if confidence > 0.8:
-                        confidence_text = "🟢 High Confidence"
-                    elif confidence > 0.6:
-                        confidence_text = "🟡 Medium Confidence"
-                    else:
-                        confidence_text = "🔴 Low Confidence"
-                    
-                    st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
-                    
-                    # Additional analysis
-                    st.subheader("📊 Detailed Analysis")
-                    
-                    if prediction == 1:  # Phishing
-                        st.error("⚠️ **Warning: This URL appears to be malicious!**")
-                        st.markdown("""
-                        **Recommendations:**
-                        - Do not enter personal information
-                        - Do not download files from this site
-                        - Verify the URL with the legitimate organization
-                        - Report this URL to security authorities
-                        """)
-                    else:  # Legitimate
-                        st.success("✅ **This URL appears to be legitimate**")
-                        st.markdown("""
-                        **Note:**
-                        - This analysis is based on URL characteristics only
-                        - Always exercise caution when sharing personal information
-                        - Verify SSL certificates and site authenticity
-                        """)
-                    
-                except Exception as e:
-                    st.error(f"Error making prediction: {e}")
-                    
-            except Exception as e:
-                st.error(f"Unexpected error during analysis: {e}")
-                st.markdown("**Troubleshooting tips:**")
-                st.markdown("- Check if the URL is accessible")
-                st.markdown("- Ensure you have internet connectivity")
-                st.markdown("- Try with a different URL format")
-
-# -----------------------------------------------------------------------------
-# Batch Prediction (handles URLs with or without labels)
-# -----------------------------------------------------------------------------
-elif input_method == "Batch Prediction":
-    st.header("📊 Batch Prediction")
-    st.info("Upload a CSV file with URLs (and optionally labels) for batch analysis.")
-    
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-
-        st.write({"rows": len(df), "cols": len(df.columns)})
-        st.write("**Data preview:**")
-        st.dataframe(df.head())
-
-        # Detect URL and label columns
-        url_columns = [c for c in df.columns if c.strip().lower() in {"url", "website", "link"}]
-        target_columns = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-        
-        if not url_columns:
-            st.error("❌ No URL column found. Please ensure your CSV has a column named 'url', 'website', or 'link'.")
-            st.stop()
-        
-        url_column = url_columns[0]
-        has_labels = bool(target_columns)
-        
-        if has_labels:
-            target_column = target_columns[0]
-            st.success(f"📌 Detected: URL column '{url_column}' and label column '{target_column}'")
-            st.info("Will analyze URLs and compare with provided labels for accuracy calculation.")
-            st.write({target_column: df[target_column].value_counts(dropna=False).to_dict()})
-        else:
-            st.success(f"📌 Detected: URL column '{url_column}' without labels")
-            st.info("Will analyze URLs and provide predictions for download.")
-        
-        st.write(f"**Total URLs to process:** {len(df)}")
-
-        if st.button("🚀 Run Batch Analysis", type="primary"):
-            if not use_ml_model and not use_regex:
-                st.error("Please enable at least one analysis method (Regex or ML Model)")
-                st.stop()
-                
-            if use_ml_model and (model is None or scaler is None):
-                st.error("ML Model or scaler not loaded")
-                st.stop()
-                
-            if use_ml_model and not FEATURE_EXTRACTION_AVAILABLE:
-                st.error("Feature extraction not available for ML analysis")
-                st.stop()
-
-            try:
-                st.info("🔄 Processing URLs... This may take a while.")
-                
-                # Initialize results lists
-                regex_predictions = []
-                ml_predictions = []
-                ml_legit_probs = []
-                ml_phish_probs = []
-                regex_scores = []
-                failed_urls = []
-                
-                # Create progress bar
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                for idx, row in df.iterrows():
-                    url = row[url_column]
-                    status_text.text(f"Processing URL {idx + 1}/{len(df)}: {url[:50]}...")
-                    
-                    # Add protocol if missing
-                    if not str(url).startswith(('http://', 'https://')):
-                        url = 'https://' + str(url)
-                    
-                    # Regex Analysis
-                    if use_regex:
-                        try:
-                            regex_analysis = analyze_url_with_regex(url)
-                            regex_pred = get_regex_prediction(url)
-                            regex_predictions.append(regex_pred)
-                            regex_scores.append(regex_analysis['total_score'])
-                        except Exception as e:
-                            st.warning(f"Regex analysis failed for {url}: {e}")
-                            regex_predictions.append(0)  # Default to legitimate
-                            regex_scores.append(0)
-                    
-                    # ML Analysis
-                    if use_ml_model:
-                        try:
-                            features_df, error = extract_url_features(url)
-                            
-                            if error:
-                                # Use default values for failed feature extraction
-                                ml_predictions.append(0)
-                                ml_legit_probs.append(1.0)
-                                ml_phish_probs.append(0.0)
-                                failed_urls.append(url)
-                            else:
-                                # Adjust features to match model expectations
-                                if len(features_df.columns) != len(EXPECTED):
-                                    feature_values = features_df.iloc[0].tolist()
-                                    if len(feature_values) < len(EXPECTED):
-                                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                                    elif len(feature_values) > len(EXPECTED):
-                                        feature_values = feature_values[:len(EXPECTED)]
-                                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                                
-                                # Make prediction
-                                X_features = features_df.values
-                                X_scaled = scaler.transform(X_features)
-                                
-                                if hasattr(model, "predict_proba"):
-                                    probabilities = model.predict_proba(X_scaled)
-                                    ml_pred = np.argmax(probabilities, axis=1)[0]
-                                    legit_prob = probabilities[0][0]
-                                    phish_prob = probabilities[0][1]
-                                else:
-                                    ml_pred = model.predict(X_scaled)[0]
-                                    phish_prob = float(ml_pred)
-                                    legit_prob = 1.0 - phish_prob
-                                
-                                ml_predictions.append(ml_pred)
-                                ml_legit_probs.append(legit_prob)
-                                ml_phish_probs.append(phish_prob)
-                        
-                        except Exception as e:
-                            st.warning(f"ML analysis failed for {url}: {e}")
-                            ml_predictions.append(0)
-                            ml_legit_probs.append(1.0)
-                            ml_phish_probs.append(0.0)
-                            failed_urls.append(url)
-                    
-                    # Update progress
-                    progress_bar.progress((idx + 1) / len(df))
-                
-                # Clear progress indicators
-                progress_bar.empty()
-                status_text.empty()
-                
-                if failed_urls:
-                    st.warning(f"⚠️ Analysis failed for {len(failed_urls)} URLs. Using default values.")
-                
-                # Create results DataFrame
-                results_df = df.copy()
+                    st.metric("Total URLs", len(results_df))
                 
                 if use_regex:
-                    results_df["Regex_Prediction"] = regex_predictions
-                    results_df["Regex_Score"] = regex_scores
-                    results_df["Regex_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in regex_predictions]
+                    with col2:
+                        regex_legit = sum(1 for p in regex_predictions if p == 0)
+                        st.metric("Regex: Legitimate", regex_legit)
+                    with col3:
+                        regex_phish = sum(1 for p in regex_predictions if p == 1)
+                        st.metric("Regex: Phishing", regex_phish)
                 
                 if use_ml_model:
-                    results_df["ML_Prediction"] = ml_predictions
-                    results_df["ML_Legitimate_Prob"] = ml_legit_probs
-                    results_df["ML_Phishing_Prob"] = ml_phish_probs
-                    results_df["ML_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in ml_predictions]
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("ML Analysis", "Completed")
+                    with col2:
+                        ml_legit = sum(1 for p in ml_predictions if p == 0)
+                        st.metric("ML: Legitimate", ml_legit)
+                    with col3:
+                        ml_phish = sum(1 for p in ml_predictions if p == 1)
+                        st.metric("ML: Phishing", ml_phish)
+
+                # Accuracy calculation if labels provided
+                if has_labels:
+                    st.subheader("🎯 Accuracy Analysis")
+                    
+                    try:
+                        target_values = df[target_column].copy()
+                        
+                        # Convert text labels to numeric if needed
+                        if target_values.dtype == 'object':
+                            label_mapping = {
+                                'benign': 0, 'legitimate': 0, 'safe': 0, 'good': 0,
+                                'phishing': 1, 'malicious': 1, 'bad': 1, 'unsafe': 1
+                            }
+                            target_values = target_values.str.lower().map(label_mapping)
+                        
+                        # Calculate accuracy
+                        unique_labels = set(pd.Series(target_values).dropna().unique())
+                        if unique_labels <= {0, 1}:
+                            col1, col2, col3 = st.columns(3)
+                            
+                            if use_regex:
+                                with col1:
+                                    regex_acc = (np.array(regex_predictions) == target_values.to_numpy()).mean()
+                                    st.metric("Regex Accuracy", f"{regex_acc:.1%}")
+                            
+                            if use_ml_model:
+                                with col2:
+                                    ml_acc = (np.array(ml_predictions) == target_values.to_numpy()).mean()
+                                    st.metric("ML Accuracy", f"{ml_acc:.1%}")
+                            
+                            if use_regex and use_ml_model:
+                                with col3:
+                                    combined_acc = (np.array(combined_predictions) == target_values.to_numpy()).mean()
+                                    st.metric("Combined Accuracy", f"{combined_acc:.1%}")
+                        else:
+                            st.info(f"Cannot calculate accuracy - found labels: {sorted(unique_labels)}")
+                    except Exception as e:
+                        st.warning(f"Could not calculate accuracy: {e}")
+
+                # Results display
+                st.subheader("🔍 Detailed Results")
                 
-                # Create combined prediction if both methods are used
+                # Prepare display columns
+                display_columns = [url_column]
+                if has_labels:
+                    display_columns.append(target_column)
+                
+                if use_regex:
+                    display_columns.extend(["Regex_Prediction", "Regex_Score"])
+                if use_ml_model:
+                    display_columns.extend(["ML_Prediction", "ML_Legit_Prob", "ML_Phish_Prob"])
                 if use_regex and use_ml_model:
-                    combined_predictions = []
-                    for i in range(len(df)):
-                        # If either method predicts phishing, mark as phishing
-                        if regex_predictions[i] == 1 or ml_predictions[i] == 1:
-                            combined_predictions.append(1)
-                        else:
-                            combined_predictions.append(0)
-                    results_df["Combined_Prediction"] = combined_predictions
-                    results_df["Combined_Status"] = [("Phishing" if p == 1 else "Legitimate") for p in combined_predictions]
-                
-                st.success("✅ Batch analysis completed successfully!")
-
-                # Display Summary
-                st.subheader("📊 Analysis Summary")
-                col1,# -----------------------------------------------------------------------------
-# Regex-based URL analysis functions
-# -----------------------------------------------------------------------------
-import re
-
-def analyze_url_with_regex(url):
-    """Analyze URL using regex patterns for common phishing indicators"""
-    results = {}
-    
-    # Suspicious patterns
-    suspicious_patterns = {
-        'ip_address': r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',
-        'suspicious_tlds': r'\.(tk|ml|ga|cf|pw|top|click|download|zip)# app.py — Streamlit UI for model.pkl + scaler.pkl with integrated feature extraction
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-import warnings
-from pathlib import Path
-import sys
-import os
-
-# Add the current directory to Python path to import feature.py
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
-sys.path.append(str(current_dir.parent))  # Also add parent directory
-
-try:
-    from feature import FeatureExtraction
-    FEATURE_EXTRACTION_AVAILABLE = True
-except ImportError as e:
-    # Try alternative import methods
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-        feature_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(feature_module)
-        FeatureExtraction = feature_module.FeatureExtraction
-        FEATURE_EXTRACTION_AVAILABLE = True
-    except Exception as e2:
-        st.warning(f"Feature extraction not available: {e}")
-        st.caption("Make sure feature.py is in the same directory as app.py and all dependencies are installed:")
-        st.code("pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
-        FEATURE_EXTRACTION_AVAILABLE = False
-
-warnings.filterwarnings("ignore")
-
-# -----------------------------------------------------------------------------
-# Page configuration
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-st.title("🔒 URL-Based Phishing Detection System")
-st.markdown("**Detect malicious URLs using machine learning**")
-
-# -----------------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent
-ROOT_DIR = APP_DIR.parent
-MODEL_DIR = ROOT_DIR / "Main_Model"
-
-def _pick(*cands):
-    for p in cands:
-        if p and p.is_file():
-            return p
-    return None
-
-# -----------------------------------------------------------------------------
-# Load backup model (RandomForest on SCALED features) + external scaler
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_model():
-    p = _pick(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-    if not p:
-        st.error("model.pkl not found")
-        st.caption(f"Tried: {[str(x) for x in [MODEL_DIR/'model.pkl', APP_DIR/'model.pkl', ROOT_DIR/'model.pkl']]}")
-        return None
-    return joblib.load(p)
-
-@st.cache_resource
-def load_scaler():
-    p = _pick(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-    if not p:
-        st.error("scaler.pkl not found (required for model.pkl)")
-        return None
-    return joblib.load(p)
-
-model = load_model()
-scaler = load_scaler()
-
-def _uses_internal_scaler(_):
-    # model is a plain RF, so False
-    return False
-
-# -----------------------------------------------------------------------------
-# Feature extraction function
-# -----------------------------------------------------------------------------
-def extract_url_features(url):
-    """Extract features from URL using the FeatureExtraction class"""
-    if not FEATURE_EXTRACTION_AVAILABLE:
-        raise ImportError("Feature extraction module not available")
-    
-    try:
-        # Initialize feature extractor
-        extractor = FeatureExtraction(url)
-        
-        # Get the features list
-        features = extractor.getFeaturesList()
-        
-        # Define feature names based on the FeatureExtraction class methods
-        feature_names = [
-            'UsingIp', 'longUrl', 'shortUrl', 'symbol', 'redirecting',
-            'prefixSuffix', 'SubDomains', 'Hppts', 'DomainRegLen', 'Favicon',
-            'NonStdPort', 'HTTPSDomainURL', 'RequestURL', 'AnchorURL', 'LinksInScriptTags',
-            'ServerFormHandler', 'InfoEmail', 'AbnormalURL', 'WebsiteForwarding', 'StatusBarCust',
-            'DisableRightClick', 'UsingPopupWindow', 'IframeRedirection', 'AgeofDomain', 'DNSRecording',
-            'WebsiteTraffic', 'PageRank', 'GoogleIndex', 'LinksPointingToPage', 'StatsReport'
-        ]
-        
-        # Create DataFrame with extracted features
-        feature_df = pd.DataFrame([features], columns=feature_names)
-        
-        return feature_df, None  # Return DataFrame and no error
-        
-    except Exception as e:
-        return None, str(e)
-
-# -----------------------------------------------------------------------------
-# Canonical training feature names
-# Prefer scaler.feature_names_in_ to guarantee exact match for transform()
-# -----------------------------------------------------------------------------
-def _resolve_expected(scaler):
-    if hasattr(scaler, "feature_names_in_"):
-        return list(scaler.feature_names_in_)
-    # fallback: manual list of 30 features (must match your training CSV headers)
-    return [
-        "url_length","domain_age","subdomain_count","special_chars",
-        "https_usage","google_index","page_rank","domain_registration_length",
-        "suspicious_keywords","dots_count","hyphens_count","underscores_count",
-        "slashes_count","question_marks","equal_signs","at_symbols",
-        "ampersands","percent_signs","hash_signs","digits_count",
-        "letters_count","alexa_rank","domain_trust","ssl_certificate",
-        "redirects_count","page_load_time","has_forms","hidden_elements",
-        "external_links_ratio","image_text_ratio"
-    ]
-
-EXPECTED = _resolve_expected(scaler)
-
-# Diagnostics
-DEBUG = False  # set True when you want to see developer info
-if DEBUG:
-    st.caption(f"len(EXPECTED)={len(EXPECTED)}")
-    if hasattr(scaler, "feature_names_in_"):
-        st.caption(f"Scaler expects: {list(scaler.feature_names_in_)}")
-
-# -----------------------------------------------------------------------------
-# Sidebar
-# -----------------------------------------------------------------------------
-st.sidebar.header("Input Method")
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["URL Analysis", "Batch Prediction"]
-)
-
-# -----------------------------------------------------------------------------
-# URL Analysis
-# -----------------------------------------------------------------------------
-if input_method == "URL Analysis":
-    st.header("🔍 Single URL Analysis")
-    st.info("Enter a URL to extract features automatically and detect phishing.")
-    
-    url_input = st.text_input("Enter URL:", placeholder="https://example.com")
-    
-    if st.button("🔍 Analyze URL", type="primary"):
-        if not url_input:
-            st.error("Please enter a URL")
-            st.stop()
-            
-        if model is None or scaler is None:
-            st.error("Model or scaler not loaded")
-            st.stop()
-            
-        if not FEATURE_EXTRACTION_AVAILABLE:
-            st.error("Feature extraction module not available. Please ensure feature.py is in the correct location.")
-            st.stop()
-        
-        # Add protocol if missing
-        if not url_input.startswith(('http://', 'https://')):
-            url_input = 'https://' + url_input
-        
-        with st.spinner("Extracting features from URL..."):
-            try:
-                # Extract features
-                features_df, error = extract_url_features(url_input)
-                
-                if error:
-                    st.error(f"Error extracting features: {error}")
-                    st.stop()
-                
-                st.success("✅ Features extracted successfully!")
-                
-                # Display extracted features
-                with st.expander("View Extracted Features"):
-                    st.dataframe(features_df)
-                
-                # Debug info
-                st.info(f"Extracted {len(features_df.columns)} features, model expects {len(EXPECTED)}")
-                
-                # Force the features to match exactly what the model expects
-                if len(features_df.columns) != len(EXPECTED):
-                    st.warning(f"Adjusting feature count from {len(features_df.columns)} to {len(EXPECTED)}")
-                    
-                    # Get the feature values as a list
-                    feature_values = features_df.iloc[0].tolist()
-                    
-                    # Adjust the feature count
-                    if len(feature_values) < len(EXPECTED):
-                        # Add zeros for missing features
-                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                        st.info(f"Added {len(EXPECTED) - len(features_df.columns)} padding features")
-                    elif len(feature_values) > len(EXPECTED):
-                        # Trim extra features
-                        feature_values = feature_values[:len(EXPECTED)]
-                        st.info(f"Trimmed to first {len(EXPECTED)} features")
-                    
-                    # Create new DataFrame with correct feature count and names
-                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                    st.success(f"✅ Features adjusted to match model expectations ({len(EXPECTED)} features)")
-                
-                # Convert to numpy array for prediction
-                X_features = features_df.values
-                
-                # Apply scaler
-                try:
-                    X_scaled = scaler.transform(X_features)
-                except Exception as e:
-                    st.error(f"Error applying scaler: {e}")
-                    st.error("This might be due to feature format issues.")
-                    st.error("Debug info:")
-                    st.write(f"Features shape: {X_features.shape}")
-                    st.write(f"Features DataFrame columns: {len(features_df.columns)}")
-                    if hasattr(scaler, "n_features_in_"):
-                        st.write(f"Scaler expects: {scaler.n_features_in_} features")
-                    st.stop()
-                
-                # Make prediction
-                try:
-                    if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(X_scaled)
-                        prediction = np.argmax(probabilities, axis=1)[0]
-                        legit_prob = probabilities[0][0]
-                        phish_prob = probabilities[0][1]
-                    else:
-                        prediction = model.predict(X_scaled)[0]
-                        phish_prob = float(prediction)
-                        legit_prob = 1.0 - phish_prob
-                    
-                    # Display results
-                    st.subheader("🎯 Prediction Results")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        status = "🔴 Phishing" if prediction == 1 else "🟢 Legitimate"
-                        st.metric("Status", status)
-                    
-                    with col2:
-                        st.metric("Legitimate Probability", f"{legit_prob:.2%}")
-                    
-                    with col3:
-                        st.metric("Phishing Probability", f"{phish_prob:.2%}")
-                    
-                    # Confidence indicator
-                    confidence = max(legit_prob, phish_prob)
-                    if confidence > 0.8:
-                        confidence_text = "🟢 High Confidence"
-                    elif confidence > 0.6:
-                        confidence_text = "🟡 Medium Confidence"
-                    else:
-                        confidence_text = "🔴 Low Confidence"
-                    
-                    st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
-                    
-                    # Additional analysis
-                    st.subheader("📊 Detailed Analysis")
-                    
-                    if prediction == 1:  # Phishing
-                        st.error("⚠️ **Warning: This URL appears to be malicious!**")
-                        st.markdown("""
-                        **Recommendations:**
-                        - Do not enter personal information
-                        - Do not download files from this site
-                        - Verify the URL with the legitimate organization
-                        - Report this URL to security authorities
-                        """)
-                    else:  # Legitimate
-                        st.success("✅ **This URL appears to be legitimate**")
-                        st.markdown("""
-                        **Note:**
-                        - This analysis is based on URL characteristics only
-                        - Always exercise caution when sharing personal information
-                        - Verify SSL certificates and site authenticity
-                        """)
-                    
-                except Exception as e:
-                    st.error(f"Error making prediction: {e}")
-                    
-            except Exception as e:
-                st.error(f"Unexpected error during analysis: {e}")
-                st.markdown("**Troubleshooting tips:**")
-                st.markdown("- Check if the URL is accessible")
-                st.markdown("- Ensure you have internet connectivity")
-                st.markdown("- Try with a different URL format")
-
-# -----------------------------------------------------------------------------
-# Batch Prediction (handles both pre-extracted features and raw URLs)
-# -----------------------------------------------------------------------------
-elif input_method == "Batch Prediction":
-    st.header("📊 Batch Prediction")
-    st.info("Upload a CSV file with URLs (and optionally labels) for batch analysis, or pre-extracted features.")
-    
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-
-        st.write({"rows": len(df), "cols": len(df.columns)})
-        st.write("**Data preview:**")
-        st.dataframe(df.head())
-
-        # Check if this is a URL-only file or a features file
-        url_columns = [c for c in df.columns if c.strip().lower() in {"url", "website", "link"}]
-        target_columns = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-        
-        is_url_file = bool(url_columns) and len(df.columns) <= 3  # URL + maybe label + maybe index
-        is_feature_file = len(df.columns) >= 10  # Likely has extracted features
-        
-        if is_url_file:
-            st.success("📌 Detected URL-based file. Will extract features automatically.")
-            url_column = url_columns[0]
-            
-            if target_columns:
-                st.info(f"Found target column: {target_columns[0]}")
-                target_column = target_columns[0]
-                st.write({target_column: df[target_column].value_counts(dropna=False).to_dict()})
-            else:
-                target_column = None
-                
-        elif is_feature_file:
-            st.success("📌 Detected feature-based file. Will use existing features.")
-            target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-            if target_like:
-                st.info(f"Found target-like columns: {target_like}. They will be dropped for prediction.")
-                for tcol in target_like:
-                    try:
-                        st.write({tcol: df[tcol].value_counts(dropna=False).to_dict()})
-                    except Exception:
-                        pass
-        else:
-            st.warning("⚠️ Cannot determine file type. Please ensure your CSV has either:")
-            st.markdown("- A 'url' column for automatic feature extraction, OR")
-            st.markdown("- Pre-extracted features matching the expected format")
-            st.stop()
-
-        st.write(f"**Columns in file:** {list(df.columns)}")
-        st.write(f"**Number of columns:** {len(df.columns)}")
-        
-        if is_feature_file:
-            st.write(f"**Expected feature columns:** {EXPECTED}")
-
-        if st.button("🚀 Run Batch Prediction", type="primary"):
-            if model is None or scaler is None:
-                st.error("Model or scaler not loaded")
-                st.stop()
-
-            try:
-                if is_url_file:
-                    # Extract features from URLs
-                    if not FEATURE_EXTRACTION_AVAILABLE:
-                        st.error("Feature extraction not available for URL processing")
-                        st.stop()
-                    
-                    st.info("🔄 Extracting features from URLs... This may take a while.")
-                    
-                    all_features = []
-                    failed_urls = []
-                    
-                    # Create progress bar
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    for idx, row in df.iterrows():
-                        url = row[url_column]
-                        status_text.text(f"Processing URL {idx + 1}/{len(df)}: {url[:50]}...")
-                        
-                        try:
-                            # Add protocol if missing
-                            if not str(url).startswith(('http://', 'https://')):
-                                url = 'https://' + str(url)
-                            
-                            features_df, error = extract_url_features(url)
-                            
-                            if error:
-                                st.warning(f"Failed to extract features for {url}: {error}")
-                                # Use default/zero features for failed URLs
-                                features = [0] * len(EXPECTED)
-                                failed_urls.append(url)
-                            else:
-                                features = features_df.iloc[0].tolist()
-                            
-                            all_features.append(features)
-                            
-                        except Exception as e:
-                            st.warning(f"Error processing {url}: {str(e)}")
-                            features = [0] * len(EXPECTED)
-                            all_features.append(features)
-                            failed_urls.append(url)
-                        
-                        # Update progress
-                        progress_bar.progress((idx + 1) / len(df))
-                    
-                    # Clear progress indicators
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    if failed_urls:
-                        st.warning(f"⚠️ Failed to extract features for {len(failed_urls)} URLs. Using default values.")
-                    
-                    # Create features DataFrame
-                    features_df = pd.DataFrame(all_features, columns=EXPECTED)
-                    
-                    st.success(f"✅ Feature extraction completed for {len(df)} URLs!")
-                    
-                else:
-                    # Use existing features (original logic)
-                    target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-                    features_df = df.drop(columns=target_like, errors="ignore").copy()
-
-                    # Require exact set and order of features
-                    missing = [c for c in EXPECTED if c not in features_df.columns]
-                    extra   = [c for c in features_df.columns if c not in EXPECTED]
-                    if missing or extra:
-                        st.error("❌ Columns mismatch")
-                        st.write({"missing": missing, "extra": extra})
-                        st.stop()
-
-                    features_df = features_df[EXPECTED]
-
-                # Ensure numeric
-                features_df = features_df.apply(pd.to_numeric, errors="coerce")
-                if features_df.isna().any().any():
-                    st.error("❌ Non-numeric values detected after coercion")
-                    st.write(features_df.isna().sum())
-                    st.stop()
-
-                # External scaler path
-                if hasattr(scaler, "feature_names_in_"):
-                    if list(scaler.feature_names_in_) != list(EXPECTED):
-                        st.error("Scaler feature-name order does not match EXPECTED")
-                        st.stop()
-                X_in = scaler.transform(features_df)
-
-                # Predict
-                if hasattr(model, "predict_proba"):
-                    probabilities = model.predict_proba(X_in)
-                    predictions = np.argmax(probabilities, axis=1)
-                    legit_prob = probabilities[:, 0]
-                    phish_prob = probabilities[:, 1]
-                else:
-                    predictions = model.predict(X_in)
-                    phish_prob = predictions.astype(float)
-                    legit_prob = 1.0 - phish_prob
-
-                # Assemble results
-                results_df = df.copy()
-                results_df["Prediction"] = predictions
-                results_df["Legitimate_Prob"] = legit_prob
-                results_df["Phishing_Prob"] = phish_prob
-                results_df["Status"] = results_df["Prediction"].map({0: "Legitimate", 1: "Phishing"})
-
-                st.success("✅ Batch prediction completed successfully!")
-
-                st.subheader("📊 Prediction Summary")
-                col1, col2, col3 = st.columns(3)
-                with col1: 
-                    st.metric("Total URLs", len(results_df))
-                with col2: 
-                    legit_count = int((predictions == 0).sum())
-                    st.metric("Legitimate", legit_count, delta=f"{legit_count/len(results_df)*100:.1f}%")
-                with col3: 
-                    phish_count = int((predictions == 1).sum())
-                    st.metric("Phishing", phish_count, delta=f"{phish_count/len(results_df)*100:.1f}%")
-
-                # Determine display columns based on file type
-                if is_url_file:
-                    display_columns = [url_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_column:
-                        display_columns = [url_column, target_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                else:
-                    display_columns = ["Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_like:
-                        display_columns = [target_like[0]] + display_columns
-
-                st.subheader("🔍 Detailed Results")
+                    display_columns.append("Combined_Prediction")
                 
                 # Filter options
                 col1, col2 = st.columns(2)
                 with col1:
-                    status_filter = st.selectbox("Filter by Status:", ["All", "Legitimate", "Phishing"])
+                    status_filter = st.selectbox("Filter by Status:", ["All", "Legitimate (0)", "Phishing (1)"])
+                
                 with col2:
-                    confidence_threshold = st.slider("Minimum Confidence:", 0.0, 1.0, 0.0, 0.1)
+                    if use_ml_model:
+                        confidence_threshold = st.slider("Minimum ML Confidence:", 0.0, 1.0, 0.0, 0.1)
+                    else:
+                        confidence_threshold = 0.0
                 
                 # Apply filters
                 filtered_df = results_df.copy()
-                if status_filter != "All":
-                    filtered_df = filtered_df[filtered_df["Status"] == status_filter]
                 
-                if confidence_threshold > 0:
+                if status_filter == "Legitimate (0)":
+                    if use_regex and use_ml_model:
+                        filtered_df = filtered_df[filtered_df["Combined_Prediction"] == 0]
+                    elif use_regex:
+                        filtered_df = filtered_df[filtered_df["Regex_Prediction"] == 0]
+                    elif use_ml_model:
+                        filtered_df = filtered_df[filtered_df["ML_Prediction"] == 0]
+                elif status_filter == "Phishing (1)":
+                    if use_regex and use_ml_model:
+                        filtered_df = filtered_df[filtered_df["Combined_Prediction"] == 1]
+                    elif use_regex:
+                        filtered_df = filtered_df[filtered_df["Regex_Prediction"] == 1]
+                    elif use_ml_model:
+                        filtered_df = filtered_df[filtered_df["ML_Prediction"] == 1]
+                
+                if confidence_threshold > 0 and use_ml_model:
                     filtered_df = filtered_df[
-                        (filtered_df["Legitimate_Prob"] >= confidence_threshold) | 
-                        (filtered_df["Phishing_Prob"] >= confidence_threshold)
+                        (filtered_df["ML_Legit_Prob"] >= confidence_threshold) | 
+                        (filtered_df["ML_Phish_Prob"] >= confidence_threshold)
                     ]
                 
                 st.dataframe(filtered_df[display_columns], use_container_width=True)
 
-                # Calculate accuracy if target column exists
-                if is_url_file and target_column:
-                    try:
-                        # Handle both numeric (0/1) and text (benign/phishing) labels
-                        target_values = df[target_column].copy()
-                        
-                        # Convert text labels to numeric if needed
-                        if target_values.dtype == 'object':
-                            # Map text labels to numeric
-                            label_mapping = {
-                                'benign': 0, 'legitimate': 0, 'safe': 0, 'good': 0,
-                                'phishing': 1, 'malicious': 1, 'bad': 1, 'unsafe': 1
-                            }
-                            target_values = target_values.str.lower().map(label_mapping)
-                        
-                        # Check if we have valid binary labels
-                        uniq = set(pd.Series(target_values).dropna().unique())
-                        if uniq <= {0, 1}:
-                            acc = (predictions == target_values.to_numpy()).mean()
-                            st.metric(f"Accuracy vs '{target_column}'", f"{acc:.1%}")
+                # Download section
+                st.subheader("📥 Download Results")
+                
+                if has_labels:
+                    st.info("Your CSV contained labels. Download includes original labels vs predictions.")
+                else:
+                    st.info("Your CSV didn't contain labels. Download includes predictions for each URL.")
+                
+                # Prepare simplified download data
+                download_df = df.copy()
+                
+                if use_regex and not use_ml_model:
+                    # Only regex predictions
+                    download_df["Prediction"] = regex_predictions
+                elif use_ml_model and not use_regex:
+                    # Only ML predictions
+                    download_df["Prediction"] = ml_predictions
+                elif use_regex and use_ml_model:
+                    # Combined predictions
+                    download_df["Regex_Prediction"] = regex_predictions
+                    download_df["ML_Prediction"] = ml_predictions
+                    download_df["Combined_Prediction"] = combined_predictions
+                
+                # Create download buttons
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Simple predictions CSV
+                    if use_regex and use_ml_model:
+                        simple_df = df[[url_column]].copy()
+                        if has_labels:
+                            simple_df[target_column] = df[target_column]
+                        simple_df["Prediction"] = combined_predictions
+                    else:
+                        simple_df = download_df[[url_column]].copy()
+                        if has_labels:
+                            simple_df[target_column] = df[target_column]
+                        if use_regex:
+                            simple_df["Prediction"] = regex_predictions
                         else:
-                            st.info(f"Cannot calculate accuracy - found labels: {sorted(uniq)}")
-                    except Exception as e:
-                        st.warning(f"Could not calculate accuracy: {e}")
-                elif not is_url_file:
-                    # Original accuracy calculation for feature files
-                    for tcol in target_like:
-                        try:
-                            uniq = set(pd.Series(df[tcol]).dropna().unique())
-                            if uniq <= {0,1}:
-                                acc = (predictions == df[tcol].to_numpy()).mean()
-                                st.metric(f"Accuracy vs '{tcol}'", f"{acc:.1%}")
-                                break
-                        except Exception:
-                            pass
-
-                # Download
-                csv = results_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Complete Results CSV",
-                    data=csv,
-                    file_name="phishing_predictions.csv",
-                    mime="text/csv",
-                )
+                            simple_df["Prediction"] = ml_predictions
+                    
+                    simple_csv = simple_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Simple Results",
+                        data=simple_csv,
+                        file_name="phishing_predictions.csv",
+                        mime="text/csv",
+                    )
+                
+                with col2:
+                    # Detailed results CSV
+                    detailed_csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Detailed Results",
+                        data=detailed_csv,
+                        file_name="detailed_phishing_analysis.csv",
+                        mime="text/csv",
+                    )
 
             except Exception as e:
-                st.error(f"❌ Error in batch prediction: {e}")
+                st.error(f"❌ Error in batch analysis: {e}")
                 st.markdown("**Troubleshooting:**")
-                if is_url_file:
-                    st.markdown("1. Ensure URLs are properly formatted")
-                    st.markdown("2. Check internet connectivity for feature extraction")
-                    st.markdown("3. Some URLs may fail - this is normal")
-                else:
-                    st.markdown("1. Headers must exactly match the expected feature names")
-                    st.markdown("2. Remove any target column (class/label/target/y)")
-                    st.markdown("3. All values must be numeric")
-                    st.markdown("4. scaler.pkl must match model.pkl training run")
+                st.markdown("1. Ensure URLs are properly formatted")
+                st.markdown("2. Check internet connectivity")
+                st.markdown("3. Try reducing parallel workers if getting timeout errors")
+                st.markdown("4. Some URL failures are normal and handled gracefully")
 
 # -----------------------------------------------------------------------------
 # Footer
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.markdown("Built by Group AJ 🎈 | Cybersecurity DLI Project")
-
-# -----------------------------------------------------------------------------
-# Additional Information Section
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("---")
-    st.header("ℹ️ Information")
-    
-    st.markdown("**Feature Extraction Status:**")
-    if FEATURE_EXTRACTION_AVAILABLE:
-        st.success("✅ Available")
-    else:
-        st.error("❌ Not Available")
-        st.caption("Make sure feature.py is in the correct location")
-    
-    st.markdown("**Model Status:**")
-    if model is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    st.markdown("**Scaler Status:**")
-    if scaler is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    with st.expander("🔧 Technical Details"):
-        st.markdown(f"**Expected Features:** {len(EXPECTED)}")
-        st.markdown(f"**Feature Extraction Available:** {FEATURE_EXTRACTION_AVAILABLE}")
-        if hasattr(scaler, "feature_names_in_"):
-            st.markdown(f"**Scaler Features:** {len(scaler.feature_names_in_)}")
-,
-        'url_shorteners': r'(bit\.ly|tinyurl|t\.co|goo\.gl|ow\.ly|is\.gd|buff\.ly)',
-        'suspicious_subdomains': r'(secure|account|verify|update|confirm|login|signin)',
-        'hom# app.py — Streamlit UI for model.pkl + scaler.pkl with integrated feature extraction
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-import warnings
-from pathlib import Path
-import sys
-import os
-
-# Add the current directory to Python path to import feature.py
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
-sys.path.append(str(current_dir.parent))  # Also add parent directory
-
-try:
-    from feature import FeatureExtraction
-    FEATURE_EXTRACTION_AVAILABLE = True
-except ImportError as e:
-    # Try alternative import methods
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-        feature_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(feature_module)
-        FeatureExtraction = feature_module.FeatureExtraction
-        FEATURE_EXTRACTION_AVAILABLE = True
-    except Exception as e2:
-        st.warning(f"Feature extraction not available: {e}")
-        st.caption("Make sure feature.py is in the same directory as app.py and all dependencies are installed:")
-        st.code("pip install beautifulsoup4 requests python-whois googlesearch-python python-dateutil lxml")
-        FEATURE_EXTRACTION_AVAILABLE = False
-
-warnings.filterwarnings("ignore")
-
-# -----------------------------------------------------------------------------
-# Page configuration
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-st.title("🔒 URL-Based Phishing Detection System")
-st.markdown("**Detect malicious URLs using machine learning**")
-
-# -----------------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent
-ROOT_DIR = APP_DIR.parent
-MODEL_DIR = ROOT_DIR / "Main_Model"
-
-def _pick(*cands):
-    for p in cands:
-        if p and p.is_file():
-            return p
-    return None
-
-# -----------------------------------------------------------------------------
-# Load backup model (RandomForest on SCALED features) + external scaler
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_model():
-    p = _pick(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-    if not p:
-        st.error("model.pkl not found")
-        st.caption(f"Tried: {[str(x) for x in [MODEL_DIR/'model.pkl', APP_DIR/'model.pkl', ROOT_DIR/'model.pkl']]}")
-        return None
-    return joblib.load(p)
-
-@st.cache_resource
-def load_scaler():
-    p = _pick(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-    if not p:
-        st.error("scaler.pkl not found (required for model.pkl)")
-        return None
-    return joblib.load(p)
-
-model = load_model()
-scaler = load_scaler()
-
-def _uses_internal_scaler(_):
-    # model is a plain RF, so False
-    return False
-
-# -----------------------------------------------------------------------------
-# Feature extraction function
-# -----------------------------------------------------------------------------
-def extract_url_features(url):
-    """Extract features from URL using the FeatureExtraction class"""
-    if not FEATURE_EXTRACTION_AVAILABLE:
-        raise ImportError("Feature extraction module not available")
-    
-    try:
-        # Initialize feature extractor
-        extractor = FeatureExtraction(url)
-        
-        # Get the features list
-        features = extractor.getFeaturesList()
-        
-        # Define feature names based on the FeatureExtraction class methods
-        feature_names = [
-            'UsingIp', 'longUrl', 'shortUrl', 'symbol', 'redirecting',
-            'prefixSuffix', 'SubDomains', 'Hppts', 'DomainRegLen', 'Favicon',
-            'NonStdPort', 'HTTPSDomainURL', 'RequestURL', 'AnchorURL', 'LinksInScriptTags',
-            'ServerFormHandler', 'InfoEmail', 'AbnormalURL', 'WebsiteForwarding', 'StatusBarCust',
-            'DisableRightClick', 'UsingPopupWindow', 'IframeRedirection', 'AgeofDomain', 'DNSRecording',
-            'WebsiteTraffic', 'PageRank', 'GoogleIndex', 'LinksPointingToPage', 'StatsReport'
-        ]
-        
-        # Create DataFrame with extracted features
-        feature_df = pd.DataFrame([features], columns=feature_names)
-        
-        return feature_df, None  # Return DataFrame and no error
-        
-    except Exception as e:
-        return None, str(e)
-
-# -----------------------------------------------------------------------------
-# Canonical training feature names
-# Prefer scaler.feature_names_in_ to guarantee exact match for transform()
-# -----------------------------------------------------------------------------
-def _resolve_expected(scaler):
-    if hasattr(scaler, "feature_names_in_"):
-        return list(scaler.feature_names_in_)
-    # fallback: manual list of 30 features (must match your training CSV headers)
-    return [
-        "url_length","domain_age","subdomain_count","special_chars",
-        "https_usage","google_index","page_rank","domain_registration_length",
-        "suspicious_keywords","dots_count","hyphens_count","underscores_count",
-        "slashes_count","question_marks","equal_signs","at_symbols",
-        "ampersands","percent_signs","hash_signs","digits_count",
-        "letters_count","alexa_rank","domain_trust","ssl_certificate",
-        "redirects_count","page_load_time","has_forms","hidden_elements",
-        "external_links_ratio","image_text_ratio"
-    ]
-
-EXPECTED = _resolve_expected(scaler)
-
-# Diagnostics
-DEBUG = False  # set True when you want to see developer info
-if DEBUG:
-    st.caption(f"len(EXPECTED)={len(EXPECTED)}")
-    if hasattr(scaler, "feature_names_in_"):
-        st.caption(f"Scaler expects: {list(scaler.feature_names_in_)}")
-
-# -----------------------------------------------------------------------------
-# Sidebar
-# -----------------------------------------------------------------------------
-st.sidebar.header("Input Method")
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["URL Analysis", "Batch Prediction"]
-)
-
-# -----------------------------------------------------------------------------
-# URL Analysis
-# -----------------------------------------------------------------------------
-if input_method == "URL Analysis":
-    st.header("🔍 Single URL Analysis")
-    st.info("Enter a URL to extract features automatically and detect phishing.")
-    
-    url_input = st.text_input("Enter URL:", placeholder="https://example.com")
-    
-    if st.button("🔍 Analyze URL", type="primary"):
-        if not url_input:
-            st.error("Please enter a URL")
-            st.stop()
-            
-        if model is None or scaler is None:
-            st.error("Model or scaler not loaded")
-            st.stop()
-            
-        if not FEATURE_EXTRACTION_AVAILABLE:
-            st.error("Feature extraction module not available. Please ensure feature.py is in the correct location.")
-            st.stop()
-        
-        # Add protocol if missing
-        if not url_input.startswith(('http://', 'https://')):
-            url_input = 'https://' + url_input
-        
-        with st.spinner("Extracting features from URL..."):
-            try:
-                # Extract features
-                features_df, error = extract_url_features(url_input)
-                
-                if error:
-                    st.error(f"Error extracting features: {error}")
-                    st.stop()
-                
-                st.success("✅ Features extracted successfully!")
-                
-                # Display extracted features
-                with st.expander("View Extracted Features"):
-                    st.dataframe(features_df)
-                
-                # Debug info
-                st.info(f"Extracted {len(features_df.columns)} features, model expects {len(EXPECTED)}")
-                
-                # Force the features to match exactly what the model expects
-                if len(features_df.columns) != len(EXPECTED):
-                    st.warning(f"Adjusting feature count from {len(features_df.columns)} to {len(EXPECTED)}")
-                    
-                    # Get the feature values as a list
-                    feature_values = features_df.iloc[0].tolist()
-                    
-                    # Adjust the feature count
-                    if len(feature_values) < len(EXPECTED):
-                        # Add zeros for missing features
-                        feature_values.extend([0] * (len(EXPECTED) - len(feature_values)))
-                        st.info(f"Added {len(EXPECTED) - len(features_df.columns)} padding features")
-                    elif len(feature_values) > len(EXPECTED):
-                        # Trim extra features
-                        feature_values = feature_values[:len(EXPECTED)]
-                        st.info(f"Trimmed to first {len(EXPECTED)} features")
-                    
-                    # Create new DataFrame with correct feature count and names
-                    features_df = pd.DataFrame([feature_values], columns=EXPECTED)
-                    st.success(f"✅ Features adjusted to match model expectations ({len(EXPECTED)} features)")
-                
-                # Convert to numpy array for prediction
-                X_features = features_df.values
-                
-                # Apply scaler
-                try:
-                    X_scaled = scaler.transform(X_features)
-                except Exception as e:
-                    st.error(f"Error applying scaler: {e}")
-                    st.error("This might be due to feature format issues.")
-                    st.error("Debug info:")
-                    st.write(f"Features shape: {X_features.shape}")
-                    st.write(f"Features DataFrame columns: {len(features_df.columns)}")
-                    if hasattr(scaler, "n_features_in_"):
-                        st.write(f"Scaler expects: {scaler.n_features_in_} features")
-                    st.stop()
-                
-                # Make prediction
-                try:
-                    if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(X_scaled)
-                        prediction = np.argmax(probabilities, axis=1)[0]
-                        legit_prob = probabilities[0][0]
-                        phish_prob = probabilities[0][1]
-                    else:
-                        prediction = model.predict(X_scaled)[0]
-                        phish_prob = float(prediction)
-                        legit_prob = 1.0 - phish_prob
-                    
-                    # Display results
-                    st.subheader("🎯 Prediction Results")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        status = "🔴 Phishing" if prediction == 1 else "🟢 Legitimate"
-                        st.metric("Status", status)
-                    
-                    with col2:
-                        st.metric("Legitimate Probability", f"{legit_prob:.2%}")
-                    
-                    with col3:
-                        st.metric("Phishing Probability", f"{phish_prob:.2%}")
-                    
-                    # Confidence indicator
-                    confidence = max(legit_prob, phish_prob)
-                    if confidence > 0.8:
-                        confidence_text = "🟢 High Confidence"
-                    elif confidence > 0.6:
-                        confidence_text = "🟡 Medium Confidence"
-                    else:
-                        confidence_text = "🔴 Low Confidence"
-                    
-                    st.info(f"Prediction Confidence: {confidence_text} ({confidence:.1%})")
-                    
-                    # Additional analysis
-                    st.subheader("📊 Detailed Analysis")
-                    
-                    if prediction == 1:  # Phishing
-                        st.error("⚠️ **Warning: This URL appears to be malicious!**")
-                        st.markdown("""
-                        **Recommendations:**
-                        - Do not enter personal information
-                        - Do not download files from this site
-                        - Verify the URL with the legitimate organization
-                        - Report this URL to security authorities
-                        """)
-                    else:  # Legitimate
-                        st.success("✅ **This URL appears to be legitimate**")
-                        st.markdown("""
-                        **Note:**
-                        - This analysis is based on URL characteristics only
-                        - Always exercise caution when sharing personal information
-                        - Verify SSL certificates and site authenticity
-                        """)
-                    
-                except Exception as e:
-                    st.error(f"Error making prediction: {e}")
-                    
-            except Exception as e:
-                st.error(f"Unexpected error during analysis: {e}")
-                st.markdown("**Troubleshooting tips:**")
-                st.markdown("- Check if the URL is accessible")
-                st.markdown("- Ensure you have internet connectivity")
-                st.markdown("- Try with a different URL format")
-
-# -----------------------------------------------------------------------------
-# Batch Prediction (handles both pre-extracted features and raw URLs)
-# -----------------------------------------------------------------------------
-elif input_method == "Batch Prediction":
-    st.header("📊 Batch Prediction")
-    st.info("Upload a CSV file with URLs (and optionally labels) for batch analysis, or pre-extracted features.")
-    
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-
-        st.write({"rows": len(df), "cols": len(df.columns)})
-        st.write("**Data preview:**")
-        st.dataframe(df.head())
-
-        # Check if this is a URL-only file or a features file
-        url_columns = [c for c in df.columns if c.strip().lower() in {"url", "website", "link"}]
-        target_columns = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-        
-        is_url_file = bool(url_columns) and len(df.columns) <= 3  # URL + maybe label + maybe index
-        is_feature_file = len(df.columns) >= 10  # Likely has extracted features
-        
-        if is_url_file:
-            st.success("📌 Detected URL-based file. Will extract features automatically.")
-            url_column = url_columns[0]
-            
-            if target_columns:
-                st.info(f"Found target column: {target_columns[0]}")
-                target_column = target_columns[0]
-                st.write({target_column: df[target_column].value_counts(dropna=False).to_dict()})
-            else:
-                target_column = None
-                
-        elif is_feature_file:
-            st.success("📌 Detected feature-based file. Will use existing features.")
-            target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-            if target_like:
-                st.info(f"Found target-like columns: {target_like}. They will be dropped for prediction.")
-                for tcol in target_like:
-                    try:
-                        st.write({tcol: df[tcol].value_counts(dropna=False).to_dict()})
-                    except Exception:
-                        pass
-        else:
-            st.warning("⚠️ Cannot determine file type. Please ensure your CSV has either:")
-            st.markdown("- A 'url' column for automatic feature extraction, OR")
-            st.markdown("- Pre-extracted features matching the expected format")
-            st.stop()
-
-        st.write(f"**Columns in file:** {list(df.columns)}")
-        st.write(f"**Number of columns:** {len(df.columns)}")
-        
-        if is_feature_file:
-            st.write(f"**Expected feature columns:** {EXPECTED}")
-
-        if st.button("🚀 Run Batch Prediction", type="primary"):
-            if model is None or scaler is None:
-                st.error("Model or scaler not loaded")
-                st.stop()
-
-            try:
-                if is_url_file:
-                    # Extract features from URLs
-                    if not FEATURE_EXTRACTION_AVAILABLE:
-                        st.error("Feature extraction not available for URL processing")
-                        st.stop()
-                    
-                    st.info("🔄 Extracting features from URLs... This may take a while.")
-                    
-                    all_features = []
-                    failed_urls = []
-                    
-                    # Create progress bar
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    for idx, row in df.iterrows():
-                        url = row[url_column]
-                        status_text.text(f"Processing URL {idx + 1}/{len(df)}: {url[:50]}...")
-                        
-                        try:
-                            # Add protocol if missing
-                            if not str(url).startswith(('http://', 'https://')):
-                                url = 'https://' + str(url)
-                            
-                            features_df, error = extract_url_features(url)
-                            
-                            if error:
-                                st.warning(f"Failed to extract features for {url}: {error}")
-                                # Use default/zero features for failed URLs
-                                features = [0] * len(EXPECTED)
-                                failed_urls.append(url)
-                            else:
-                                features = features_df.iloc[0].tolist()
-                            
-                            all_features.append(features)
-                            
-                        except Exception as e:
-                            st.warning(f"Error processing {url}: {str(e)}")
-                            features = [0] * len(EXPECTED)
-                            all_features.append(features)
-                            failed_urls.append(url)
-                        
-                        # Update progress
-                        progress_bar.progress((idx + 1) / len(df))
-                    
-                    # Clear progress indicators
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    if failed_urls:
-                        st.warning(f"⚠️ Failed to extract features for {len(failed_urls)} URLs. Using default values.")
-                    
-                    # Create features DataFrame
-                    features_df = pd.DataFrame(all_features, columns=EXPECTED)
-                    
-                    st.success(f"✅ Feature extraction completed for {len(df)} URLs!")
-                    
-                else:
-                    # Use existing features (original logic)
-                    target_like = [c for c in df.columns if c.strip().lower() in {"class","label","target","y"}]
-                    features_df = df.drop(columns=target_like, errors="ignore").copy()
-
-                    # Require exact set and order of features
-                    missing = [c for c in EXPECTED if c not in features_df.columns]
-                    extra   = [c for c in features_df.columns if c not in EXPECTED]
-                    if missing or extra:
-                        st.error("❌ Columns mismatch")
-                        st.write({"missing": missing, "extra": extra})
-                        st.stop()
-
-                    features_df = features_df[EXPECTED]
-
-                # Ensure numeric
-                features_df = features_df.apply(pd.to_numeric, errors="coerce")
-                if features_df.isna().any().any():
-                    st.error("❌ Non-numeric values detected after coercion")
-                    st.write(features_df.isna().sum())
-                    st.stop()
-
-                # External scaler path
-                if hasattr(scaler, "feature_names_in_"):
-                    if list(scaler.feature_names_in_) != list(EXPECTED):
-                        st.error("Scaler feature-name order does not match EXPECTED")
-                        st.stop()
-                X_in = scaler.transform(features_df)
-
-                # Predict
-                if hasattr(model, "predict_proba"):
-                    probabilities = model.predict_proba(X_in)
-                    predictions = np.argmax(probabilities, axis=1)
-                    legit_prob = probabilities[:, 0]
-                    phish_prob = probabilities[:, 1]
-                else:
-                    predictions = model.predict(X_in)
-                    phish_prob = predictions.astype(float)
-                    legit_prob = 1.0 - phish_prob
-
-                # Assemble results
-                results_df = df.copy()
-                results_df["Prediction"] = predictions
-                results_df["Legitimate_Prob"] = legit_prob
-                results_df["Phishing_Prob"] = phish_prob
-                results_df["Status"] = results_df["Prediction"].map({0: "Legitimate", 1: "Phishing"})
-
-                st.success("✅ Batch prediction completed successfully!")
-
-                st.subheader("📊 Prediction Summary")
-                col1, col2, col3 = st.columns(3)
-                with col1: 
-                    st.metric("Total URLs", len(results_df))
-                with col2: 
-                    legit_count = int((predictions == 0).sum())
-                    st.metric("Legitimate", legit_count, delta=f"{legit_count/len(results_df)*100:.1f}%")
-                with col3: 
-                    phish_count = int((predictions == 1).sum())
-                    st.metric("Phishing", phish_count, delta=f"{phish_count/len(results_df)*100:.1f}%")
-
-                # Determine display columns based on file type
-                if is_url_file:
-                    display_columns = [url_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_column:
-                        display_columns = [url_column, target_column, "Status", "Legitimate_Prob", "Phishing_Prob"]
-                else:
-                    display_columns = ["Status", "Legitimate_Prob", "Phishing_Prob"]
-                    if target_like:
-                        display_columns = [target_like[0]] + display_columns
-
-                st.subheader("🔍 Detailed Results")
-                
-                # Filter options
-                col1, col2 = st.columns(2)
-                with col1:
-                    status_filter = st.selectbox("Filter by Status:", ["All", "Legitimate", "Phishing"])
-                with col2:
-                    confidence_threshold = st.slider("Minimum Confidence:", 0.0, 1.0, 0.0, 0.1)
-                
-                # Apply filters
-                filtered_df = results_df.copy()
-                if status_filter != "All":
-                    filtered_df = filtered_df[filtered_df["Status"] == status_filter]
-                
-                if confidence_threshold > 0:
-                    filtered_df = filtered_df[
-                        (filtered_df["Legitimate_Prob"] >= confidence_threshold) | 
-                        (filtered_df["Phishing_Prob"] >= confidence_threshold)
-                    ]
-                
-                st.dataframe(filtered_df[display_columns], use_container_width=True)
-
-                # Calculate accuracy if target column exists
-                if is_url_file and target_column:
-                    try:
-                        # Handle both numeric (0/1) and text (benign/phishing) labels
-                        target_values = df[target_column].copy()
-                        
-                        # Convert text labels to numeric if needed
-                        if target_values.dtype == 'object':
-                            # Map text labels to numeric
-                            label_mapping = {
-                                'benign': 0, 'legitimate': 0, 'safe': 0, 'good': 0,
-                                'phishing': 1, 'malicious': 1, 'bad': 1, 'unsafe': 1
-                            }
-                            target_values = target_values.str.lower().map(label_mapping)
-                        
-                        # Check if we have valid binary labels
-                        uniq = set(pd.Series(target_values).dropna().unique())
-                        if uniq <= {0, 1}:
-                            acc = (predictions == target_values.to_numpy()).mean()
-                            st.metric(f"Accuracy vs '{target_column}'", f"{acc:.1%}")
-                        else:
-                            st.info(f"Cannot calculate accuracy - found labels: {sorted(uniq)}")
-                    except Exception as e:
-                        st.warning(f"Could not calculate accuracy: {e}")
-                elif not is_url_file:
-                    # Original accuracy calculation for feature files
-                    for tcol in target_like:
-                        try:
-                            uniq = set(pd.Series(df[tcol]).dropna().unique())
-                            if uniq <= {0,1}:
-                                acc = (predictions == df[tcol].to_numpy()).mean()
-                                st.metric(f"Accuracy vs '{tcol}'", f"{acc:.1%}")
-                                break
-                        except Exception:
-                            pass
-
-                # Download
-                csv = results_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Complete Results CSV",
-                    data=csv,
-                    file_name="phishing_predictions.csv",
-                    mime="text/csv",
-                )
-
-            except Exception as e:
-                st.error(f"❌ Error in batch prediction: {e}")
-                st.markdown("**Troubleshooting:**")
-                if is_url_file:
-                    st.markdown("1. Ensure URLs are properly formatted")
-                    st.markdown("2. Check internet connectivity for feature extraction")
-                    st.markdown("3. Some URLs may fail - this is normal")
-                else:
-                    st.markdown("1. Headers must exactly match the expected feature names")
-                    st.markdown("2. Remove any target column (class/label/target/y)")
-                    st.markdown("3. All values must be numeric")
-                    st.markdown("4. scaler.pkl must match model.pkl training run")
-
-# -----------------------------------------------------------------------------
-# Footer
-# -----------------------------------------------------------------------------
-st.markdown("---")
-st.markdown("Built by Group AJ 🎈 | Cybersecurity DLI Project")
-
-# -----------------------------------------------------------------------------
-# Additional Information Section
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("---")
-    st.header("ℹ️ Information")
-    
-    st.markdown("**Feature Extraction Status:**")
-    if FEATURE_EXTRACTION_AVAILABLE:
-        st.success("✅ Available")
-    else:
-        st.error("❌ Not Available")
-        st.caption("Make sure feature.py is in the correct location")
-    
-    st.markdown("**Model Status:**")
-    if model is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    st.markdown("**Scaler Status:**")
-    if scaler is not None:
-        st.success("✅ Loaded")
-    else:
-        st.error("❌ Not Loaded")
-    
-    with st.expander("🔧 Technical Details"):
-        st.markdown(f"**Expected Features:** {len(EXPECTED)}")
-        st.markdown(f"**Feature Extraction Available:** {FEATURE_EXTRACTION_AVAILABLE}")
-        if hasattr(scaler, "feature_names_in_"):
-            st.markdown(f"**Scaler Features:** {len(scaler.feature_names_in_)}")
+st.markdown("**Built by Group AJ 🎈 | Cybersecurity DLI Project**")
+st.caption("This system uses machine learning and regex pattern matching to detect phishing URLs.")
