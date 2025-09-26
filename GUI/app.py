@@ -821,11 +821,10 @@
 # st.markdown("**Built by Group AJ 🎈 | Cybersecurity DLI Project**")
 # st.caption("This system uses machine learning and regex pattern matching to detect phishing URLs.")
 
-# app.py — Enhanced with new model integration and timeout features
+# app.py — Enhanced Phishing Detection with Clear Verdicts
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import pickle
 import warnings
 from pathlib import Path
@@ -835,7 +834,6 @@ import re
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 from urllib.parse import urlparse
 import tensorflow as tf
 from tensorflow.keras.models import load_model
@@ -847,36 +845,26 @@ warnings.filterwarnings("ignore")
 # Add current directory to Python path for imports
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
-sys.path.append(str(current_dir.parent))
 
 # Try to import feature extraction module
 try:
     from feature import FeatureExtraction
     FEATURE_EXTRACTION_AVAILABLE = True
 except ImportError as e:
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("feature", current_dir / "feature.py")
-        feature_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(feature_module)
-        FeatureExtraction = feature_module.FeatureExtraction
-        FEATURE_EXTRACTION_AVAILABLE = True
-    except Exception:
-        st.warning(f"Feature extraction not available: {e}")
-        FEATURE_EXTRACTION_AVAILABLE = False
+    st.warning(f"Feature extraction not available: {e}")
+    FEATURE_EXTRACTION_AVAILABLE = False
 
 # Page configuration
 st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout="wide")
-st.title("🔒 URL-Based Phishing Detection System")
-st.markdown("**Detect malicious URLs using hybrid ML + DL models with timeout handling**")
+st.title("🔒 Advanced URL Phishing Detection System")
+st.markdown("**Detect malicious URLs using hybrid ML + DL models**")
 
 # -----------------------------------------------------------------------------
-# Load ALL Models (Old + New)
+# Load Models from hybrid_results (Only new models)
 # -----------------------------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
-MODEL_DIR = ROOT_DIR / "Main_Model"
-HYBRID_DIR = ROOT_DIR / "hybrid_vision_results"  # Your new model directory
+MODEL_DIR = ROOT_DIR / "hybrid_results"  # Only use hybrid_results
 
 def find_file(*candidates):
     for path in candidates:
@@ -886,50 +874,40 @@ def find_file(*candidates):
 
 @st.cache_resource
 def load_models():
-    """Load both old and new models"""
+    """Load all models from hybrid_results directory"""
     models = {}
     
-    # OLD MODEL (Your original)
-    old_model_path = find_file(MODEL_DIR/"model.pkl", APP_DIR/"model.pkl", ROOT_DIR/"model.pkl")
-    old_scaler_path = find_file(MODEL_DIR/"scaler.pkl", APP_DIR/"scaler.pkl", ROOT_DIR/"scaler.pkl")
-    
-    if old_model_path and old_scaler_path:
-        try:
-            models['old_ml_model'] = joblib.load(old_model_path)
-            models['old_scaler'] = joblib.load(old_scaler_path)
-            st.sidebar.success("✅ Old ML Model Loaded")
-        except Exception as e:
-            st.sidebar.warning(f"⚠️ Old model loading failed: {e}")
-    
-    # NEW MODELS (Your enhanced version)
     try:
-        # New ML Model
-        new_ml_path = find_file(HYBRID_DIR/"real_time_phishing_ml_model.pkl", 
-                               ROOT_DIR/"real_time_phishing_ml_model.pkl")
-        new_scaler_path = find_file(HYBRID_DIR/"phishing_scaler.pkl", 
-                                  ROOT_DIR/"phishing_scaler.pkl")
+        # ML Model and Scaler
+        ml_path = find_file(MODEL_DIR/"accessible_ml_model.pkl")
+        scaler_path = find_file(MODEL_DIR/"accessible_scaler.pkl")
+        hybrid_path = find_file(MODEL_DIR/"hybrid_predictor.pkl")
         
-        if new_ml_path and new_scaler_path:
-            with open(new_ml_path, 'rb') as f:
-                models['new_ml_model'] = pickle.load(f)
-            with open(new_scaler_path, 'rb') as f:
-                models['new_scaler'] = pickle.load(f)
-            st.sidebar.success("✅ New ML Model Loaded")
+        if ml_path and scaler_path:
+            with open(ml_path, 'rb') as f:
+                models['ml_model'] = pickle.load(f)
+            with open(scaler_path, 'rb') as f:
+                models['scaler'] = pickle.load(f)
+            st.sidebar.success("✅ ML Model Loaded")
         
-        # New DL Model
-        dl_model_path = find_file(HYBRID_DIR/"real_dataset_dl_model.h5", 
-                                ROOT_DIR/"real_dataset_dl_model.h5")
-        tokenizer_path = find_file(HYBRID_DIR/"real_dataset_tokenizer.pkl", 
-                                 ROOT_DIR/"real_dataset_tokenizer.pkl")
+        # Hybrid Model
+        if hybrid_path:
+            with open(hybrid_path, 'rb') as f:
+                models['hybrid_model'] = pickle.load(f)
+            st.sidebar.success("✅ Hybrid Model Loaded")
         
-        if dl_model_path and tokenizer_path:
-            models['dl_model'] = load_model(dl_model_path)
+        # DL Model
+        dl_path = find_file(MODEL_DIR/"real_dataset_dl_model.h5")
+        tokenizer_path = find_file(MODEL_DIR/"real_dataset_tokenizer.pkl")
+        
+        if dl_path and tokenizer_path:
+            models['dl_model'] = load_model(dl_path)
             with open(tokenizer_path, 'rb') as f:
                 models['tokenizer'] = pickle.load(f)
             st.sidebar.success("✅ DL Model Loaded")
             
     except Exception as e:
-        st.sidebar.warning(f"⚠️ New models loading failed: {e}")
+        st.sidebar.error(f"❌ Model loading failed: {e}")
     
     return models
 
@@ -937,7 +915,7 @@ def load_models():
 models = load_models()
 
 # -----------------------------------------------------------------------------
-# Timeout Functions for URL Accessibility Check
+# Timeout Functions
 # -----------------------------------------------------------------------------
 def check_url_accessibility(url, timeout=10):
     """Check if URL is accessible within timeout period"""
@@ -981,10 +959,10 @@ def extract_features_with_timeout(url, timeout=10):
             return None, "Feature extraction timeout"
 
 # -----------------------------------------------------------------------------
-# Enhanced Prediction Function with Timeout Logic
+# Enhanced Prediction Function
 # -----------------------------------------------------------------------------
 def enhanced_url_prediction(url, use_ml=True, use_dl=True, timeout=10):
-    """Enhanced prediction with timeout handling and model fallback"""
+    """Enhanced prediction with timeout handling"""
     results = {
         'url': url,
         'accessible': None,
@@ -1011,7 +989,7 @@ def enhanced_url_prediction(url, use_ml=True, use_dl=True, timeout=10):
         if accessibility == "timeout":
             results['timeout_occurred'] = True
             results['accessible'] = False
-            # Timeout occurred - skip ML, use DL directly
+            # Timeout occurred - use DL directly
             if use_dl and 'dl_model' in models and 'tokenizer' in models:
                 results['method_used'] = 'dl_timeout_fallback'
                 dl_pred, dl_conf = predict_with_dl(url, models['dl_model'], models['tokenizer'])
@@ -1022,26 +1000,26 @@ def enhanced_url_prediction(url, use_ml=True, use_dl=True, timeout=10):
             return results
         
         elif accessibility:  # URL is accessible
-            # Try ML model first (if available and requested)
-            if use_ml and 'new_ml_model' in models and 'new_scaler' in models:
+            # Try ML model first
+            if use_ml and 'ml_model' in models and 'scaler' in models:
                 try:
                     # Extract features with timeout
-                    features, error = extract_features_with_timeout(url, timeout-2)  # Reserve 2 seconds
+                    features, error = extract_features_with_timeout(url, timeout-2)
                     
                     if error:
                         results['error'] = f"ML feature extraction failed: {error}"
                     else:
                         # Make ML prediction
                         features_array = np.array(features).reshape(1, -1)
-                        features_scaled = models['new_scaler'].transform(features_array)
+                        features_scaled = models['scaler'].transform(features_array)
                         
-                        if hasattr(models['new_ml_model'], "predict_proba"):
-                            ml_proba = models['new_ml_model'].predict_proba(features_scaled)[0]
+                        if hasattr(models['ml_model'], "predict_proba"):
+                            ml_proba = models['ml_model'].predict_proba(features_scaled)[0]
                             ml_pred = np.argmax(ml_proba)
                             ml_conf = max(ml_proba)
                         else:
-                            ml_pred = models['new_ml_model'].predict(features_scaled)[0]
-                            ml_conf = 0.5  # Default confidence if no probabilities
+                            ml_pred = models['ml_model'].predict(features_scaled)[0]
+                            ml_conf = 0.5
                         
                         results['ml_prediction'] = int(ml_pred)
                         results['ml_confidence'] = float(ml_conf)
@@ -1116,23 +1094,46 @@ def predict_with_dl(url, dl_model, tokenizer):
         return 0, 0.5  # Default to benign with low confidence
 
 # -----------------------------------------------------------------------------
-# Regex Analysis Functions (Keep your existing)
+# Regex Analysis Functions
 # -----------------------------------------------------------------------------
 def analyze_url_with_regex(url):
-    """Your existing regex function"""
-    # ... keep your existing regex code ...
-    return analysis_result
+    """Basic regex analysis for URL patterns"""
+    suspicious_patterns = {
+        'ip_address': r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
+        'hex_encoded': r'%[0-9a-fA-F]{2}',
+        'multiple_subdomains': r'([a-zA-Z0-9-]+\.){3,}',
+        'suspicious_keywords': r'(login|verify|account|secure|update|banking|paypal)',
+        'long_url': r'^.{50,}$',
+        'shortening_service': r'(bit\.ly|goo\.gl|tinyurl|t\.co|ow\.ly)'
+    }
+    
+    scores = {}
+    total_score = 0
+    
+    for pattern_name, pattern in suspicious_patterns.items():
+        matches = re.findall(pattern, url.lower())
+        if matches:
+            scores[pattern_name] = len(matches)
+            total_score += len(matches)
+        else:
+            scores[pattern_name] = 0
+    
+    return {
+        'scores': scores,
+        'total_score': total_score,
+        'risk_level': 'High' if total_score >= 4 else 'Medium' if total_score >= 2 else 'Low'
+    }
 
 def get_regex_prediction(url):
-    """Your existing regex prediction"""
+    """Get regex-based prediction"""
     analysis = analyze_url_with_regex(url)
     return 1 if analysis['total_score'] >= 4 else 0
 
 # -----------------------------------------------------------------------------
-# Enhanced Single URL Processing
+# Single URL Processing
 # -----------------------------------------------------------------------------
 def process_single_url_enhanced(url_data):
-    """Enhanced single URL processing with timeout handling"""
+    """Enhanced single URL processing"""
     idx, url, use_regex, use_ml, use_dl, timeout = url_data
     
     # Add protocol if missing
@@ -1173,7 +1174,7 @@ def process_single_url_enhanced(url_data):
             'error': enhanced_result.get('error')
         })
         
-        # Regex analysis (if requested)
+        # Regex analysis
         if use_regex:
             regex_analysis = analyze_url_with_regex(url)
             result['regex_pred'] = get_regex_prediction(url)
@@ -1185,12 +1186,12 @@ def process_single_url_enhanced(url_data):
     return result
 
 # -----------------------------------------------------------------------------
-# Updated Sidebar Configuration
+# Sidebar Configuration
 # -----------------------------------------------------------------------------
 st.sidebar.header("Input Method")
 input_method = st.sidebar.radio(
     "Choose input method:",
-    ["URL Analysis", "Batch Prediction"]
+    ["Single URL Analysis", "Batch Prediction"]
 )
 
 st.sidebar.header("Analysis Options")
@@ -1203,8 +1204,7 @@ timeout_seconds = st.sidebar.slider(
     "Timeout (seconds)", 
     min_value=5, 
     max_value=30, 
-    value=10,
-    help="Maximum time to wait for URL accessibility check"
+    value=10
 )
 
 st.sidebar.header("Performance Settings")
@@ -1212,8 +1212,7 @@ max_workers = st.sidebar.slider(
     "Parallel Workers", 
     min_value=1, 
     max_value=50, 
-    value=10,
-    help="Number of URLs to process simultaneously"
+    value=10
 )
 
 # Status indicators
@@ -1223,18 +1222,18 @@ with st.sidebar:
     
     # Model availability
     st.markdown("**Models Loaded:**")
-    if 'new_ml_model' in models:
-        st.success("✅ New ML Model")
+    if 'ml_model' in models:
+        st.success("✅ ML Model")
     else:
-        st.warning("⚠️ New ML Model")
+        st.warning("⚠️ ML Model")
     
     if 'dl_model' in models:
         st.success("✅ DL Model")
     else:
         st.warning("⚠️ DL Model")
     
-    if 'old_ml_model' in models:
-        st.info("ℹ️ Old ML Model")
+    if 'hybrid_model' in models:
+        st.success("✅ Hybrid Model")
     
     st.markdown("**Feature Extraction:**")
     if FEATURE_EXTRACTION_AVAILABLE:
@@ -1243,11 +1242,11 @@ with st.sidebar:
         st.error("❌ Not Available")
 
 # -----------------------------------------------------------------------------
-# Updated Single URL Analysis Section
+# Single URL Analysis Section
 # -----------------------------------------------------------------------------
-if input_method == "URL Analysis":
-    st.header("🔍 Enhanced URL Analysis")
-    st.info("Uses hybrid ML+DL approach with automatic timeout handling")
+if input_method == "Single URL Analysis":
+    st.header("🔍 Single URL Analysis")
+    st.info("Analyze individual URLs with hybrid ML+DL approach")
     
     url_input = st.text_input("Enter URL:", placeholder="https://example.com")
     
@@ -1278,103 +1277,117 @@ if input_method == "URL Analysis":
                 timeout=current_timeout
             )
         
-        # Display Results
-        st.subheader("🎯 Enhanced Analysis Results")
+        # 🎯 CLEAR VERDICT DISPLAY
+        st.markdown("---")
         
-        # Accessibility info
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if result['accessible'] == "timeout" or result['timeout_occurred']:
-                st.error("⏰ Timeout Occurred")
-                st.info("DL model used due to timeout")
-            elif result['accessible']:
-                st.success("✅ URL Accessible")
-            else:
-                st.warning("❌ URL Not Accessible")
-        
-        with col2:
-            if result['method_used']:
-                method_map = {
-                    'ml_primary': 'ML Model Only',
-                    'dl_primary': 'DL Model Only', 
-                    'dl_timeout_fallback': 'DL (Timeout Fallback)',
-                    'dl_inaccessible': 'DL (URL Inaccessible)',
-                    'ml_dl_ensemble': 'ML+DL Ensemble'
-                }
-                st.info(f"Method: {method_map.get(result['method_used'], result['method_used'])}")
-        
-        with col3:
-            if result['final_prediction'] is not None:
-                status = "🔴 Phishing" if result['final_prediction'] == 1 else "🟢 Legitimate"
-                st.metric("Final Prediction", status)
-        
-        # Detailed predictions
-        if use_ml_model and result['ml_prediction'] is not None:
-            st.subheader("🤖 ML Model Analysis")
-            col1, col2 = st.columns(2)
-            with col1:
-                ml_status = "🔴 Phishing" if result['ml_prediction'] == 1 else "🟢 Legitimate"
-                st.metric("ML Prediction", ml_status)
-            with col2:
-                st.metric("ML Confidence", f"{result.get('ml_confidence', 0):.1%}")
-        
-        if use_dl_model and result['dl_prediction'] is not None:
-            st.subheader("🧠 DL Model Analysis")
-            col1, col2 = st.columns(2)
-            with col1:
-                dl_status = "🔴 Phishing" if result['dl_prediction'] == 1 else "🟢 Legitimate"
-                st.metric("DL Prediction", dl_status)
-            with col2:
-                st.metric("DL Confidence", f"{result.get('dl_confidence', 0):.1%}")
-        
-        # Final result with confidence
         if result['final_prediction'] is not None:
-            st.subheader("🎯 Final Result")
-            confidence = result.get('final_confidence', 0)
-            
-            if confidence > 0.8:
-                confidence_color = "🟢"
-                confidence_text = "High Confidence"
-            elif confidence > 0.6:
-                confidence_color = "🟡" 
-                confidence_text = "Medium Confidence"
+            # Calculate phishing probability
+            if result.get('dl_prediction') is not None and result.get('dl_confidence') is not None:
+                phishing_prob = result['dl_confidence'] if result['dl_prediction'] == 1 else (1 - result['dl_confidence'])
+            elif result.get('ml_confidence') is not None:
+                phishing_prob = result['ml_confidence'] if result.get('ml_prediction') == 1 else (1 - result.get('ml_confidence', 0.5))
             else:
-                confidence_color = "🔴"
-                confidence_text = "Low Confidence"
+                phishing_prob = result.get('final_confidence', 0.5)
             
-            col1, col2 = st.columns(2)
+            # 🚨 PROMINENT VERDICT
+            st.subheader("🎯 FINAL VERDICT")
+            
+            if result['final_prediction'] == 1:
+                st.error(f"🚨 PHISHING URL DETECTED - {phishing_prob:.2%} probability")
+            else:
+                st.success(f"✅ LEGITIMATE URL - {phishing_prob:.2%} probability")
+            
+            # Detailed information like your test example
+            col1, col2, col3 = st.columns(3)
+            
             with col1:
-                final_status = "🔴 PHISHING" if result['final_prediction'] == 1 else "🟢 LEGITIMATE"
-                st.metric("Final Verdict", final_status)
+                st.metric("Phishing Probability", f"{phishing_prob:.2%}")
+                st.write(f"**Raw Score:** {phishing_prob:.4f}")
+            
             with col2:
-                st.metric("Confidence", f"{confidence_color} {confidence_text} ({confidence:.1%})")
+                status = "Online" if result['accessible'] else "Offline"
+                st.metric("URL Status", status)
+                
+                if result['method_used']:
+                    method_display = result['method_used'].replace('_', ' ').title()
+                    st.write(f"**Model Used:** {method_display}")
+            
+            with col3:
+                threshold = 0.5
+                st.metric("Threshold", f"{threshold:.1f}")
+                
+                if phishing_prob > 0.8:
+                    confidence_level = "High"
+                    risk_level = "High Risk"
+                elif phishing_prob > 0.6:
+                    confidence_level = "Medium"
+                    risk_level = "Medium Risk"
+                else:
+                    confidence_level = "Low"
+                    risk_level = "Low Risk"
+                
+                st.write(f"**Confidence:** {confidence_level}")
+                st.write(f"**Risk Level:** {risk_level}")
+            
+            # Explanation
+            st.markdown("---")
+            st.subheader("🔍 Classification Details")
+            
+            if result['final_prediction'] == 1:
+                st.write(f"**Classification:** PHISHING")
+                st.write(f"**Reason:** Probability ({phishing_prob:.4f}) is above threshold 0.5")
+            else:
+                st.write(f"**Classification:** LEGITIMATE")
+                st.write(f"**Reason:** Probability ({phishing_prob:.4f}) is below threshold 0.5")
+            
+            # Model-specific results
+            if use_ml_model and result['ml_prediction'] is not None:
+                st.subheader("🤖 ML Model Results")
+                ml_prob = result['ml_confidence'] if result['ml_prediction'] == 1 else (1 - result['ml_confidence'])
+                ml_status = "Phishing" if result['ml_prediction'] == 1 else "Legitimate"
+                st.write(f"**Prediction:** {ml_status} ({ml_prob:.2%})")
+            
+            if use_dl_model and result['dl_prediction'] is not None:
+                st.subheader("🧠 DL Model Results")
+                dl_prob = result['dl_confidence'] if result['dl_prediction'] == 1 else (1 - result['dl_confidence'])
+                dl_status = "Phishing" if result['dl_prediction'] == 1 else "Legitimate"
+                st.write(f"**Prediction:** {dl_status} ({dl_prob:.2%})")
             
             # Security recommendations
+            st.markdown("---")
             st.subheader("🛡️ Security Recommendations")
+            
             if result['final_prediction'] == 1:
-                st.error("🚨 **HIGH RISK URL DETECTED**")
+                st.error("**HIGH RISK - Exercise Extreme Caution**")
                 st.markdown("""
-                - ⚠️ Do not enter personal information
-                - ⚠️ Do not download files from this site  
+                - ⚠️ Do not enter personal or financial information
+                - ⚠️ Do not download files from this site
                 - ⚠️ Verify the URL with the legitimate organization
-                - ⚠️ Report this URL to security authorities
+                - ⚠️ Report suspicious URLs to security authorities
+                - ⚠️ Use antivirus software to scan your system
                 """)
             else:
-                st.success("✅ **This URL appears to be legitimate**")
+                st.success("**LOW RISK - Appears Legitimate**")
                 st.markdown("""
                 - ✅ Exercise normal caution when sharing information
                 - ✅ Verify SSL certificates for sensitive operations
                 - ✅ Keep your security software updated
+                - ✅ Be cautious of unexpected pop-ups or requests
                 """)
+        
+        else:
+            st.error("❌ Analysis failed - no prediction available")
+            if result.get('error'):
+                st.write(f"Error: {result['error']}")
 
 # -----------------------------------------------------------------------------
-# Updated Batch Prediction Section
+# Batch Prediction Section
 # -----------------------------------------------------------------------------
 elif input_method == "Batch Prediction":
-    st.header("📊 Enhanced Batch Prediction")
-    st.info("Process multiple URLs with timeout handling and automatic model fallback")
+    st.header("📊 Batch URL Analysis")
+    st.info("Process multiple URLs from a CSV file")
     
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+    uploaded_file = st.file_uploader("Upload CSV file with URLs", type=["csv"])
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
@@ -1386,13 +1399,13 @@ elif input_method == "Batch Prediction":
         # Detect URL column
         url_columns = [c for c in df.columns if c.lower() in {"url", "website", "link"}]
         if not url_columns:
-            st.error("❌ No URL column found")
+            st.error("❌ No URL column found. Please ensure your CSV has a column named 'URL', 'Website', or 'Link'")
             st.stop()
         
         url_column = url_columns[0]
         st.success(f"📌 Detected URL column: '{url_column}'")
 
-        if st.button("🚀 Run Enhanced Batch Analysis", type="primary"):
+        if st.button("🚀 Run Batch Analysis", type="primary"):
             if not any([use_regex, use_ml_model, use_dl_model]):
                 st.error("Please enable at least one analysis method")
                 st.stop()
@@ -1427,7 +1440,6 @@ elif input_method == "Batch Prediction":
                 results_df = df.copy()
                 
                 # Add all result columns
-                result_columns = []
                 for idx in range(len(df)):
                     if idx in results:
                         result = results[idx]
@@ -1447,10 +1459,10 @@ elif input_method == "Batch Prediction":
                         results_df.at[idx, 'Timeout_Occurred'] = result.get('timeout_occurred', False)
                         results_df.at[idx, 'Method_Used'] = result.get('method_used', 'unknown')
                 
-                st.success(f"✅ Enhanced batch analysis completed!")
+                st.success(f"✅ Batch analysis completed!")
                 
                 # Display summary statistics
-                st.subheader("📊 Enhanced Analysis Summary")
+                st.subheader("📊 Analysis Summary")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
@@ -1470,16 +1482,16 @@ elif input_method == "Batch Prediction":
                     st.subheader("🔧 Method Usage Distribution")
                     method_counts = results_df['Method_Used'].value_counts()
                     for method, count in method_counts.items():
-                        st.write(f"- **{method}**: {count} URLs")
+                        st.write(f"- **{method.replace('_', ' ').title()}**: {count} URLs")
                 
                 # Download results
-                st.subheader("📥 Download Enhanced Results")
+                st.subheader("📥 Download Results")
                 csv_data = results_df.to_csv(index=False)
                 
                 st.download_button(
-                    label="📥 Download Enhanced Results",
+                    label="📥 Download Analysis Results",
                     data=csv_data,
-                    file_name="enhanced_phishing_analysis.csv",
+                    file_name="phishing_analysis_results.csv",
                     mime="text/csv",
                 )
                 
@@ -1492,11 +1504,11 @@ elif input_method == "Batch Prediction":
                 st.dataframe(results_df[display_cols].head(10))
 
             except Exception as e:
-                st.error(f"❌ Error in enhanced batch analysis: {e}")
+                st.error(f"❌ Error in batch analysis: {e}")
 
 # -----------------------------------------------------------------------------
 # Footer
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.markdown("**Enhanced with Hybrid ML+DL Models | Automatic Timeout Handling**")
-st.caption("System automatically falls back to DL model when URLs timeout or are inaccessible")
+st.markdown("**Advanced Phishing Detection System | Hybrid ML+DL Models**")
+st.caption("Powered by machine learning and deep learning models for accurate URL classification")
