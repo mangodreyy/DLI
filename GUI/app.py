@@ -921,30 +921,30 @@ def load_models():
         tokenizer_path = MODEL_DIR / "real_dataset_tokenizer.pkl"
         
        # In the load_models function, replace the DL model test with:
-    if dl_path.exists() and tokenizer_path.exists():
-        try:
-            # Load DL model
-            models['dl_model'] = load_model(str(dl_path))
-            
-            # Load tokenizer
-            with open(tokenizer_path, 'rb') as f:
-                models['tokenizer'] = pickle.load(f)
-            
-            loaded_models.append("DL Model")
-            st.sidebar.success("✅ DL Model Loaded")
-            
-            # Simpler test that won't fail on model architecture
+        if dl_path.exists() and tokenizer_path.exists():
             try:
-                # Just verify the model has the expected methods
-                if hasattr(models['dl_model'], 'predict') and hasattr(models['tokenizer'], 'texts_to_sequences'):
-                    st.sidebar.success("✅ DL Model Structure Verified")
-                else:
-                    st.sidebar.warning("⚠️ DL Model structure unexpected")
-            except Exception as test_error:
-                st.sidebar.warning(f"⚠️ DL Model test inconclusive: {test_error}")
+                # Load DL model
+                models['dl_model'] = load_model(str(dl_path))
                 
-        except Exception as e:
-            st.sidebar.error(f"❌ DL Model loading failed: {e}")
+                # Load tokenizer
+                with open(tokenizer_path, 'rb') as f:
+                    models['tokenizer'] = pickle.load(f)
+                
+                loaded_models.append("DL Model")
+                st.sidebar.success("✅ DL Model Loaded")
+                
+                # Simpler test that won't fail on model architecture
+                try:
+                    # Just verify the model has the expected methods
+                    if hasattr(models['dl_model'], 'predict') and hasattr(models['tokenizer'], 'texts_to_sequences'):
+                        st.sidebar.success("✅ DL Model Structure Verified")
+                    else:
+                        st.sidebar.warning("⚠️ DL Model structure unexpected")
+                except Exception as test_error:
+                    st.sidebar.warning(f"⚠️ DL Model test inconclusive: {test_error}")
+                    
+            except Exception as e:
+                st.sidebar.error(f"❌ DL Model loading failed: {e}")
         
         else:
             missing_files = []
@@ -1600,4 +1600,5 @@ elif input_method == "Batch Prediction":
 st.markdown("---")
 st.markdown("**Advanced Phishing Detection System | Hybrid ML+DL Models**")
 st.caption("Powered by machine learning and deep learning models for accurate URL classification")
+
 
