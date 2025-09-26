@@ -920,7 +920,6 @@ def load_models():
         dl_path = MODEL_DIR / "real_dataset_dl_model.h5"
         tokenizer_path = MODEL_DIR / "real_dataset_tokenizer.pkl"
         
-       # In the load_models function, replace the DL model test with:
         if dl_path.exists() and tokenizer_path.exists():
             try:
                 # Load DL model
@@ -933,7 +932,7 @@ def load_models():
                 loaded_models.append("DL Model")
                 st.sidebar.success("✅ DL Model Loaded")
                 
-                # Simpler test that won't fail on model architecture
+                # Test the DL model to make sure it works
                 try:
                     # Just verify the model has the expected methods
                     if hasattr(models['dl_model'], 'predict') and hasattr(models['tokenizer'], 'texts_to_sequences'):
@@ -945,7 +944,7 @@ def load_models():
                     
             except Exception as e:
                 st.sidebar.error(f"❌ DL Model loading failed: {e}")
-        
+                st.sidebar.error(f"Error details: {str(e)}")
         else:
             missing_files = []
             if not dl_path.exists():
@@ -1333,28 +1332,8 @@ with st.sidebar:
         st.error("❌ Not Available")
 
 # -----------------------------------------------------------------------------
-# Single URL Analysis Section - WITH BETTER ERROR HANDLING
+# Single URL Analysis Section - CORRECTED VERSION
 # -----------------------------------------------------------------------------
-st.sidebar.header("Input Method")
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["Single URL Analysis", "Batch Prediction"]
-)
-
-st.sidebar.header("Analysis Options")
-use_regex = st.sidebar.checkbox("Enable Regex Analysis", value=True)
-use_ml_model = st.sidebar.checkbox("Enable ML Model", value=True)
-use_dl_model = st.sidebar.checkbox("Enable DL Model", value=True)
-
-# Disable options if models aren't available
-if 'ml_model' not in models:
-    use_ml_model = False
-    st.sidebar.warning("ML model not available - option disabled")
-
-if 'dl_model' not in models:
-    use_dl_model = False
-    st.sidebar.warning("DL model not available - option disabled")
-
 if input_method == "Single URL Analysis":
     st.header("🔍 Single URL Analysis")
     st.info("Analyze individual URLs with hybrid ML+DL approach")
@@ -1411,9 +1390,11 @@ if input_method == "Single URL Analysis":
             col1, col2, col3 = st.columns(3)
             
             with col1:
+                final_pred = result.get('final_prediction', 0)
+                final_conf = result.get('final_confidence', 0)
                 st.metric("Final Prediction", 
-                         "🛑 PHISHING" if result.get('final_prediction') == 1 else "✅ LEGITIMATE",
-                         f"Confidence: {result.get('final_confidence', 0):.1%}")
+                         "🛑 PHISHING" if final_pred == 1 else "✅ LEGITIMATE",
+                         f"Confidence: {final_conf:.1%}")
             
             with col2:
                 status = "✅ Accessible" if result.get('accessible') else "❌ Inaccessible"
@@ -1422,51 +1403,40 @@ if input_method == "Single URL Analysis":
                 st.metric("URL Status", status)
             
             with col3:
-                st.metric("Method Used", result.get('method_used', 'Unknown'))
+                st.metric("Method Used", result.get('method_used', 'Unknown').replace('_', ' ').title())
             
             # Detailed results
             with st.expander("🔍 Detailed Analysis"):
                 if use_ml_model and result.get('ml_prediction') is not None:
-                    st.write(f"**ML Model:** {result['ml_prediction']} (confidence: {result.get('ml_confidence', 0):.1%})")
+                    ml_pred = result.get('ml_prediction', 0)
+                    ml_conf = result.get('ml_confidence', 0)
+                    st.write(f"**ML Model:** {'🛑 PHISHING' if ml_pred == 1 else '✅ LEGITIMATE'} (confidence: {ml_conf:.1%})")
                 
                 if use_dl_model and result.get('dl_prediction') is not None:
-                    st.write(f"**DL Model:** {result['dl_prediction']} (confidence: {result.get('dl_confidence', 0):.1%})")
+                    dl_pred = result.get('dl_prediction', 0)
+                    dl_conf = result.get('dl_confidence', 0)
+                    st.write(f"**DL Model:** {'🛑 PHISHING' if dl_pred == 1 else '✅ LEGITIMATE'} (confidence: {dl_conf:.1%})")
                 
                 if use_regex:
                     regex_analysis = analyze_url_with_regex(url_input)
                     st.write(f"**Regex Analysis:** Score {regex_analysis['total_score']} ({regex_analysis['risk_level']} risk)")
-    
-    if analyze_btn or quick_analyze_btn:
-        if not url_input:
-            st.error("Please enter a URL")
-            st.stop()
-        
-        if not any([use_ml_model, use_dl_model, use_regex]):
-            st.error("Please enable at least one analysis method")
-            st.stop()
-        
-        # Use quick timeout if quick analyze button pressed
-        current_timeout = 5 if quick_analyze_btn else 10
-        
-        # Add protocol if missing
-        if not url_input.startswith(('http://', 'https://')):
-            url_input = 'https://' + url_input
-        
-        # Enhanced analysis
-        with st.spinner(f"Analyzing URL (timeout: {current_timeout}s)..."):
-            result = enhanced_url_prediction(
-                url_input, 
-                use_ml=use_ml_model, 
-                use_dl=use_dl_model, 
-                timeout=current_timeout
-            )
-        
-        # Display results
-        if result.get('error'):
-            st.error(f"❌ Analysis failed: {result['error']}")
-        else:
-            if result.get('error'):
-                st.write(f"Error: {result['error']}")
+                    
+                    # Show detailed regex scores
+                    st.write("**Regex Pattern Matches:**")
+                    for pattern, score in regex_analysis['scores'].items():
+                        if score > 0:
+                            st.write(f"  - {pattern.replace('_', ' ').title()}: {score}")
+                
+                # Show timing information
+                if result.get('accessibility_check_time'):
+                    st.write(f"**Accessibility Check:** {result['accessibility_check_time']:.2f}s")
+            
+            # Warning for low confidence
+            final_confidence = result.get('final_confidence', 0)
+            if final_confidence < 0.6:
+                st.warning("⚠️ Low confidence prediction. Consider manual review.")
+            elif final_confidence > 0.9:
+                st.success("✅ High confidence prediction.")
 
 # -----------------------------------------------------------------------------
 # Batch Prediction Section
@@ -1474,6 +1444,15 @@ if input_method == "Single URL Analysis":
 elif input_method == "Batch Prediction":
     st.header("📊 Batch URL Analysis")
     st.info("Process multiple URLs from a CSV file")
+    
+    # Disable options if models aren't available
+    if 'ml_model' not in models:
+        use_ml_model = False
+        st.warning("⚠️ ML model not available - option disabled")
+    
+    if 'dl_model' not in models:
+        use_dl_model = False
+        st.warning("⚠️ DL model not available - option disabled")
     
     uploaded_file = st.file_uploader("Upload CSV file with URLs", type=["csv"])
 
@@ -1600,5 +1579,3 @@ elif input_method == "Batch Prediction":
 st.markdown("---")
 st.markdown("**Advanced Phishing Detection System | Hybrid ML+DL Models**")
 st.caption("Powered by machine learning and deep learning models for accurate URL classification")
-
-
