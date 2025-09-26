@@ -916,7 +916,7 @@ def load_models():
         else:
             st.sidebar.warning("⚠️ Hybrid Model file not found")
         
-        # Load DL Model - FIXED THIS PART
+        # Load DL Model - FIXED SYNTAX ERROR
         dl_path = MODEL_DIR / "real_dataset_dl_model.h5"
         tokenizer_path = MODEL_DIR / "real_dataset_tokenizer.pkl"
         
@@ -944,7 +944,6 @@ def load_models():
                     
             except Exception as e:
                 st.sidebar.error(f"❌ DL Model loading failed: {e}")
-                st.sidebar.error(f"Error details: {str(e)}")
         else:
             missing_files = []
             if not dl_path.exists():
