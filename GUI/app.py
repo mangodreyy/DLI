@@ -859,9 +859,6 @@ st.set_page_config(page_title="URL Phishing Detection", page_icon="🔒", layout
 st.title("🔒 Advanced URL Phishing Detection System")
 st.markdown("**Detect malicious URLs using hybrid ML + DL models**")
 
-# -----------------------------------------------------------------------------
-# Load Models from hybrid_results - FIXED VERSION
-# -----------------------------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 MODEL_DIR = ROOT_DIR / "hybrid_results"
@@ -903,7 +900,7 @@ def load_models():
         else:
             st.sidebar.warning("⚠️ ML Model files not found")
         
-        # Load Hybrid Model
+        # Load Hybrid Model - FIXED INDENTATION AND TYPOS
         hybrid_path = MODEL_DIR / "hybrid_predictor.pkl"
         if hybrid_path.exists():
             try:
@@ -916,7 +913,7 @@ def load_models():
         else:
             st.sidebar.warning("⚠️ Hybrid Model file not found")
         
-        # Load DL Model - FIXED SYNTAX ERROR
+        # Load DL Model - FIXED SYNTAX ERRORS
         dl_path = MODEL_DIR / "real_dataset_dl_model.h5"
         tokenizer_path = MODEL_DIR / "real_dataset_tokenizer.pkl"
         
@@ -1578,3 +1575,4 @@ elif input_method == "Batch Prediction":
 st.markdown("---")
 st.markdown("**Advanced Phishing Detection System | Hybrid ML+DL Models**")
 st.caption("Powered by machine learning and deep learning models for accurate URL classification")
+
